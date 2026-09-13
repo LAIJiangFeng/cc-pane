@@ -138,6 +138,18 @@ Pebrel 的 ROADMAP 有三道可重复闸门，这是**最值得学**的部分。
   > - **平台边界**：`focus_popup_terminal_window` 的窗口还原/抢焦点属 **Windows-host-required**，此处仅验证了守卫逻辑、命令注册、前端分支与自愈回退（纯逻辑层）；真机多窗口聚焦行为需在 Windows host 上确认。
 - **F7.4** 终端内联图片（OSC 1337 / iTerm2 协议），接 `xterm-addon-image`，供 AI CLI 输出图表。
   - 验收：各自独立可验；F7.4 需确认与现有 WebGL/DOM 渲染路径不冲突（CLAUDE.md 已记录 WebGL 透明/花屏坑）。
+  > **落地状态（本次提交 a8381e01，feat(terminal)）**：已实现为**可逆开关，默认关闭**，并通过单测。`@xterm/addon-image@0.9.0` 仍是 beta 质量，且默认每个终端持有 **128MB** 图片存储 + 单图 2^24 像素上限，在多窗格管理器里内存放大明显，故坚持「默认 off、懒加载、保守限额、不阻塞启动」落地，不做常开。
+  > - Rust：`TerminalSettings` 新增 `inline_images_enabled: bool`（`#[serde(default)]`），默认 `false`；补 legacy-config 解析回退单测（旧配置无此字段也安全降级到关闭）。
+  > - 前端：`web/types/settings.ts` + `useSettingsStore` 默认 `false`；新增懒加载边界模块 `web/components/panes/terminal/terminalImageAddon.ts`（**唯一**运行时取值入口）：动态 `import("@xterm/addon-image")`、模块级 Promise 缓存（失败不缓存）、把内存上限压到 `storageLimit=32MB` / `pixelLimit=2^22`（均低于 addon 默认）、`showPlaceholder=true`、保留 `enableSizeReports`（IIP/SIXEL 需 CSI 像素尺寸查询，仓库无 `windowOptions` 冲突）。`attachTerminalImageAddon` 取回落定时复查 `isMounted()`，已卸载则不附着，任何异常一律吞掉记 `debugLog`，绝不拖垮终端本体。
+  > - `useTerminalInstanceInit.ts` 在渲染器装配后**门控 fire-and-forget** 调用（`settings.terminal.inlineImagesEnabled` 为真才触发）；addon 经 `term.loadAddon()` 注册，随 `disposeTerminalView` 的 `term.dispose()` 一并销毁，无需另起 ref。
+  > - 设置 UI：`TerminalSection` 新增 `terminal-inline-images` 开关（i18n en/zh-CN 标签+提示+搜索关键词），`settingsRegistry` 登记可搜索项。
+  > - **构建分包修复**：`vite.config.ts` 的 `manualChunks` 原本把 `node_modules/@xterm/*` 一律卷进 `"xterm"` chunk，会让 addon-image **随每次终端打开静态加载**，使「默认关闭」形同虚设。在通配规则**之前**插入 `@xterm/addon-image → "terminal-image-addon"` 专属规则，把它拆成只可经动态 import 到达的独立 chunk。验证：拆出后 `terminal-image-addon-*.js` 独立存在、`index.html` 不 modulepreload 它、首屏 gzip 仍 **848.1 kB**（与加 addon 前一致）、`check:bundle` 通过、`verify-xterm-build` 通过。
+  > - 测试：`terminalImageAddon.test.ts` 5 例（保守上限钉住 addon 默认之下、挂载中正常附着、取回期间已卸载不附着、附着抛错吞掉记日志、模块级缓存）；`lazyBoundaries.test.ts` 新增 2 例（addon-image 懒边界唯一入口 + vite manualChunks 规则顺序守护，防回归再被卷进 xterm chunk）；`settingsRegistry.test.ts` / `TerminalSection.test.tsx` 各 +1（搜索项登记 / 开关从默认关闭态可切到开启）。
+  > - 验证结果：`cargo fmt` / `clippy -p cc-panes-core --all-targets -D warnings` 干净、`cargo test -p cc-panes-core settings::` 55 通过；`tsc --noEmit` 干净；全套前端 **5489** 测试通过（+9，与 F7.3 的 5480 对比）；`lineRatchet` / `noRawText` 绿（`useTerminalInstanceInit.ts` 492 行，未越 500 红线）。
+  > - **降级与平台边界（诚实声明）**：
+  >   - 图片**不会随休眠（SerializeAddon VT 重放）恢复**——属可接受降级，已在 i18n 提示与代码注释写明。
+  >   - addon-image 用独立 overlay canvas，理论上不扰动 WebGL/DOM 渲染器回退，但**实际内联图片渲染效果属 Windows-host-required**：本环境（WSL/CI）仅验证了开关默认关闭、懒加载边界、内存限额、分包、生命周期与错误吞噬等逻辑层；真机出图、与 WebGL/DOM 路径的视觉兼容性、多图滚动表现需在 Windows host 上确认。
+  >   - 因 addon 仍为 beta，默认关闭是有意保守选择；如上游成熟或出现稳定替代，可重评是否转默认开启。
 
 ## 4. 非功能需求
 
