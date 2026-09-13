@@ -106,7 +106,7 @@ export {
   triggerUpdate,
 } from "./updaterService";
 export type { UpdateInstallProgress } from "./updaterService";
-export { popOutTab, isTabPoppedOut, markTabReclaimed, getPoppedTabs } from "./popupWindowService";
+export { popOutTab, isTabPoppedOut, markTabReclaimed, getPoppedTabs, focusPoppedOutTab } from "./popupWindowService";
 export type { PopupTabData } from "./popupWindowService";
 export * as sshMachineService from "./sshMachineService";
 export { processService } from "./processService";

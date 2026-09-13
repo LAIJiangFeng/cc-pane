@@ -91,8 +91,12 @@ export default function NotificationHistoryPanel() {
       setHistoryOpen(false);
       return;
     }
-    if (record.sessionId && focusNotificationSession(record.sessionId)) {
-      setHistoryOpen(false);
+    if (record.sessionId) {
+      // focusNotificationSession 现在要等弹出窗口聚焦结果（F7.3），故异步：
+      // 定位成功才关面板，会话已不在任何布局则留着面板让用户看到。
+      void focusNotificationSession(record.sessionId).then((focused) => {
+        if (focused) setHistoryOpen(false);
+      });
     }
   };
 

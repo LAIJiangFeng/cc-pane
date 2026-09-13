@@ -130,6 +130,12 @@ Pebrel 的 ROADMAP 有三道可重复闸门，这是**最值得学**的部分。
   > **落地状态（本次提交 cf9c3799）**：已实现并通过单测。新增独立「忽略路径」通道（不与现有 git 变更/状态模型混淆）：core `get_ignored_paths_compat`/`parse_ignored_paths_z`（`git status --porcelain=v1 -z --ignored=matching`，忽略目录整体上报一次、不递归展开）→ Tauri 命令 `get_git_ignored_paths`（已注册 lib.rs）→ web parity 路由 `GET /api/git/ignored-paths`。前端 `filesystemService.getGitIgnoredPaths` + `useFileTreeStore.ignoredPaths/loadGitIgnoredPaths` + `utils/gitIgnore`（`createGitIgnoreMatcher`，子节点继承祖先忽略态）；`FileTreeNode` 命中时斜体 + `data-ignored` + 「已被 Git 忽略」title，i18n en/zh-CN 已加。测试覆盖 core 单测+集成、Tauri 命令、web parity、gitIgnore 单测、FileTree 斜体/继承、store mock。
   > 顺带修复：F2 提交把 `useTerminalInstanceInit.ts` 撑过 500 行红线导致 `lineRatchet` 失败，按「拆分而非抬基线」策略把输入装配抽到 `terminalInputIntegration.ts`（ce8492d1），无行为变化，全套前端 5453 测试通过。
 - **F7.3** 通知点击定位到源 pane，即使该 tab 已被移到别的窗口。
+  > **落地状态（本次提交 PENDING）**：已实现并通过单测。gap 是：tab 弹出后主窗口里那个面板只剩「已弹出」占位符，原 `focusNotificationSession` 聚焦的是占位符，终端真身其实在 `popup-<tabId>` 独立窗口里——点了等于没定位。
+  > - Rust 新增命令 `focus_popup_terminal_window`（已注册 lib.rs）：`is_popup_window_label` 守卫只放行 `popup-` 前缀窗口（拒绝把主窗口/布局切换器/截图窗顶到前面），窗口不存在返回 `false`，最小化时先 `unminimize` 再 `show`+`set_focus`（Windows 上 `set_focus` 不还原最小化窗口）。`create_popup_terminal_window` 同步加 label 前缀校验。2 条守卫单测覆盖接受/拒绝。
+  > - 前端 `popupWindowService.focusPoppedOutTab(tabId)`：用记录的 label 调命令，命令抛错或返回 false 都收敛成 false（不让通知点击炸掉）；Web 运行时恒 false。5 条单测覆盖聚焦成功/窗口已不存在/未记录 tab/命令抛错/Web 运行时。
+  > - `focusNotificationSession` 改 async：tab 弹出时先试聚焦真身窗口，成功则主窗口内也对齐到该面板并返回 true；唤不回（窗口已关但回收事件丢失）才**自愈**——store 弹出态 + service label 映射两份一起 `markTabReclaimed`（reclaimKey 递增让 TerminalView 重挂），退回主窗口内定位。4 个调用方（NotificationCard/InputCard/HistoryPanel/useTrayActions）适配 async，dismiss 与聚焦结果解耦。5 条 `notificationActions.test.ts` 覆盖未弹出/弹出命中/弹出窗口已丢自愈/会话不在布局/主窗口内也找不到。
+  > - 无行为回退。`cargo fmt`/`clippy -p cc-panes --all-targets` 干净；`tsc` 干净；全套前端 **5480** 测试通过（+10）；`lineRatchet` 绿。
+  > - **平台边界**：`focus_popup_terminal_window` 的窗口还原/抢焦点属 **Windows-host-required**，此处仅验证了守卫逻辑、命令注册、前端分支与自愈回退（纯逻辑层）；真机多窗口聚焦行为需在 Windows host 上确认。
 - **F7.4** 终端内联图片（OSC 1337 / iTerm2 协议），接 `xterm-addon-image`，供 AI CLI 输出图表。
   - 验收：各自独立可验；F7.4 需确认与现有 WebGL/DOM 渲染路径不冲突（CLAUDE.md 已记录 WebGL 透明/花屏坑）。
 

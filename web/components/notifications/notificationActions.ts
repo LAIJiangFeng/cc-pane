@@ -3,6 +3,7 @@
 import type { TFunction } from "i18next";
 import { focusTab } from "@/hooks/useFocusTab";
 import { collectPanels } from "@/lib/paneTree";
+import { focusPoppedOutTab, markTabReclaimed } from "@/services/popupWindowService";
 import { useActivityBarStore, useOrchestratorStore, usePanesStore } from "@/stores";
 import { asTabId } from "@/types/ids";
 
@@ -25,11 +26,32 @@ export function locateNotificationSession(
   };
 }
 
-/** 与 OrchestratorTaskCard.focusSessionTab 同款：找到 tab 即聚焦并切回分屏视图。 */
-export function focusNotificationSession(sessionId: string): boolean {
+/**
+ * 与 OrchestratorTaskCard.focusSessionTab 同款：找到 tab 即聚焦并切回分屏视图。
+ *
+ * docs/105 F7.3：tab 若已弹出成独立系统窗口，主窗口里那个面板只剩「已弹出」占位符，
+ * 聚焦它等于没定位到任何东西——终端真身在 `popup-<tabId>` 窗口里。所以先认弹出态，
+ * 把真身窗口唤到前台；唤不回（窗口已关但回收事件丢失）才自愈回收，退回主窗口内定位。
+ * 因此返回值是 Promise：定位成功与否需要等窗口聚焦结果。
+ */
+export async function focusNotificationSession(sessionId: string): Promise<boolean> {
   const location = usePanesStore.getState().findTabBySessionAcrossLayouts(sessionId);
   if (!location) return false;
-  return focusTab(asTabId(location.tab.id), { switchAppView: true });
+  const tabId = location.tab.id;
+
+  if (usePanesStore.getState().isTabPoppedOut(tabId)) {
+    if (await focusPoppedOutTab(tabId)) {
+      // 主窗口内也切到那个面板：用户从弹出窗口切回来时停在同一个 tab 上。
+      focusTab(asTabId(tabId), { switchAppView: true });
+      return true;
+    }
+    // 窗口已不存在：两份真相一起回收（store 弹出态 + service label 映射），
+    // reclaimKey 递增让 TerminalView 在主窗口重新挂载。
+    usePanesStore.getState().markTabReclaimed(tabId);
+    markTabReclaimed(tabId);
+  }
+
+  return focusTab(asTabId(tabId), { switchAppView: true });
 }
 
 export function jumpToNotificationTask(taskBindingId: string): void {

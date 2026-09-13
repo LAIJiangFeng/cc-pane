@@ -29,8 +29,9 @@ export function handleTrayAction(payload: TrayActionPayload): void {
   switch (payload.action) {
     // 与通知卡片「聚焦会话」同一条路径：找到 tab 即聚焦并切回分屏视图；
     // 会话已不在任何布局时 focusNotificationSession 返回 false，自然 no-op。
+    // F7.3 起异步（可能要聚焦弹出窗口），此处 fire-and-forget。
     case "focus-session":
-      focusNotificationSession(payload.sessionId);
+      void focusNotificationSession(payload.sessionId);
       return;
     // 完全复用首页「对 agent 说」链路：同一默认目标解析 + 开 agent-chat 标签 +
     // 切工作区视图。托盘不带 prompt 文本，不挂管家启动意图，引擎选择页接管。
