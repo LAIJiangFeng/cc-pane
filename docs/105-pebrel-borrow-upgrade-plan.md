@@ -106,6 +106,16 @@ Pebrel 的 ROADMAP 有三道可重复闸门，这是**最值得学**的部分。
 - **F6.4** 三道闸门写进发版 checklist，任一不过即阻断发布。
   - 验收：CI 或本地能一键跑出性能数字与样张截图；连续两个版本对比可见回归/持平判定。
 
+> **更正（实施期核对）**：F6.1 / F6.2 的**测量工具仓库里已经有了**，原计划「正缺可测量的回归基线」只对了一半——缺的是**跨版本判定与发版纪律**，不是采集能力：
+> - 已有：`scripts/summarize-performance.mjs`（+ 单测）把 soak 的 `performance.jsonl` 汇总成报告；`summarize-desktop-acceptance.mjs` 做单构建桌面体检（进程内存首尾中位数、CPU、queuedChars、contextLosses、layoutSwitch 四联 WebGL）；`smoke-terminal-static-replay.mjs` 用 headless Chromium 对 dom/webgl × history/bottom 四组做**像素级** `before.equals(after)` 对账；`check-bundle-size.mjs` / `check-theme-contrast.mjs` / `verify-xterm-build.mjs` 是既有预算闸门。
+> - 真缺口（grep `threshold|baseline|regression` 在 scripts/ 0 命中）：没有任何工具把**两份报告按阈值判定回归/持平**，也没有一份发版 checklist 把它们串成阻断规则；IME 全链路只有零散教训记录（`docs/27-linux-clipboard-fix.md`），无验收清单。
+>
+> **落地状态（本次提交）**：
+> - 新增 `scripts/compare-performance.mjs`（纯函数 `compareReports`/`formatComparison` + CLI）：比较两份 `summarizePerformance` 报告，默认容差 10%（「不低于基线 90%」），回归 → 退出码 1 可作 CI 闸门；缺数据/基线为 0 的指标记 `na` 不误判。配 `compare-performance.test.mjs` 8 例（node:test）。
+> - npm 接线：`perf:summarize` / `perf:compare` / `perf:test` / `smoke:static-replay`。
+> - 新增 `docs/106-terminal-release-gates.md`：把闸门 1（性能回归）/ 2（视觉对账）/ 3（IME 人工清单）写成发版前逐项勾选、任一不过即阻断的清单，并按 `AGENTS.md` 标注 Windows-host-required 边界。
+> - **诚实标注未竟**：F6.2 的固定样张集目前只覆盖恢复路径 + CJK 文本，**尚未**纳入 boxdraw 全家桶 / 块·浓度·象限字符 / Powerline / CJK 对齐标尺 / 256 色·真彩渐变；扩展点在 `terminal-static-replay.html`（或新增 fixture）注入样张后截图归档，已在 106 文档里写明。IME 清单是人工兜底，未自动化。
+
 ### F7 小体验项（打包做） · P2
 
 - **F7.1** 浅色背景下终端文字自动对比度增强（保留本就可读的配色）。
