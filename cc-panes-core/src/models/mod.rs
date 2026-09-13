@@ -17,6 +17,7 @@ pub mod process_info;
 mod project;
 pub mod provider;
 pub mod quick_command;
+pub mod quick_terminal_settings;
 pub mod resource_policy;
 pub mod runner;
 pub mod screenshot;

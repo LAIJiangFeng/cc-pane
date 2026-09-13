@@ -121,6 +121,7 @@ use commands::{
     exit_mini_mode,
     extract_last_prompt,
     find_task_binding_by_session,
+    focus_popup_terminal_window,
     format_memory_for_injection,
     fs_copy_entry,
     fs_create_directory,
@@ -182,7 +183,6 @@ use commands::{
     get_plan_collaboration,
     get_plan_content,
     get_popup_tab_data,
-    focus_popup_terminal_window,
     get_project,
     get_project_cli_hooks,
     get_provider,
@@ -226,6 +226,7 @@ use commands::{
     git_stash_pop,
     handle_terminal_exit_spec,
     handle_terminal_exit_spec_by_session,
+    hide_quick_terminal,
     import_legacy_mcp_servers,
     import_notification_sound,
     import_project_skill,
@@ -339,6 +340,7 @@ use commands::{
     query_task_bindings,
     query_todos,
     query_usage_stats,
+    quick_terminal_update_shortcut,
     read_acp_image_attachment,
     read_agent_transcript_cmd,
     read_bundled_skill,
@@ -472,6 +474,7 @@ use commands::{
     test_im_channel,
     test_proxy,
     toggle_always_on_top,
+    toggle_quick_terminal,
     toggle_todo_my_day,
     toggle_todo_subtask,
     touch_launch_by_session,
@@ -2457,6 +2460,37 @@ pub fn run() {
                 }
             }
 
+            // ---- 注册全局快捷终端热键（docs/105 F1，全平台；注册失败只记日志不阻断启动）----
+            {
+                use tauri_plugin_global_shortcut::GlobalShortcutExt;
+                let settings_svc = app.state::<Arc<SettingsService>>();
+                let quick = settings_svc.get_settings().quick_terminal;
+                if quick.enabled && !quick.shortcut.is_empty() {
+                    if let Ok(shortcut) =
+                        quick.shortcut.parse::<tauri_plugin_global_shortcut::Shortcut>()
+                    {
+                        let app_handle = app.handle().clone();
+                        if let Err(e) =
+                            app.global_shortcut()
+                                .on_shortcut(shortcut, move |_app, _sc, event| {
+                                    if event.state
+                                        == tauri_plugin_global_shortcut::ShortcutState::Pressed
+                                    {
+                                        crate::commands::spawn_toggle_quick_terminal(&app_handle);
+                                    }
+                                })
+                        {
+                            error!(
+                                "[quick-terminal] Failed to register shortcut '{}': {}",
+                                quick.shortcut, e
+                            );
+                        }
+                    } else {
+                        error!("[quick-terminal] Invalid shortcut format: {}", quick.shortcut);
+                    }
+                }
+            }
+
             // ---- 启动 Orchestrator HTTP 服务器 ----
             {
                 let orch_svc = app.state::<Arc<OrchestratorService>>();
@@ -2937,6 +2971,9 @@ pub fn run() {
             create_popup_terminal_window,
             get_popup_tab_data,
             focus_popup_terminal_window,
+            toggle_quick_terminal,
+            hide_quick_terminal,
+            quick_terminal_update_shortcut,
             open_layout_switcher_window,
             close_layout_switcher_window,
             get_layout_switcher_snapshot,

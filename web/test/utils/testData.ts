@@ -169,6 +169,12 @@ export function createTestSettings(overrides?: Partial<AppSettings>): AppSetting
       shortcut: "Ctrl+Shift+S",
       retentionDays: 7,
     },
+    quickTerminal: {
+      enabled: true,
+      shortcut: "Ctrl+Alt+Q",
+      autoHideOnBlur: true,
+      heightFraction: 0.4,
+    },
     voice: {
       enabled: false,
       provider: "dashscope",

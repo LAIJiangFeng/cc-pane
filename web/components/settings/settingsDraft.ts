@@ -17,6 +17,7 @@ export const SECTION_DRAFT_KEYS: Partial<
   "cli-launchers": ["cliLaunchers"],
   proxy: ["proxy"],
   terminal: ["terminal"],
+  "quick-terminal": ["quickTerminal"],
   voice: ["voice"],
   ccchan: ["ccchan"],
   shortcuts: ["shortcuts"],

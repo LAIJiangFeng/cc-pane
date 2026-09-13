@@ -42,6 +42,12 @@ Pebrel 用全局热键拉出进程级单例终端，隐藏时保留 PTY 与滚�
   - 验收：呼出 → 跑 `claude` → 隐藏 → 30s 后呼出，对话仍在且可继续输入；改热键后旧热键失效、新热键生效。
   - 复用点：`tauri_plugin_global_shortcut`（`screenshot_commands.rs` 已有用法）、`window_commands.rs` 的 show/hide/resize 基建。
 
+> **落地状态（2026-09）**：F1 已实现，决策为「复用 popup/pane 终端窗口体系」（对应本节开放问题 1 的第一选项）。
+>
+> - 后端：`QuickTerminalSettings`（enabled/shortcut/autoHideOnBlur/heightFraction，dev 默认 `Ctrl+Alt+Shift+Q`、release 默认 `Ctrl+Alt+Q`，与截图快捷键同样做 dev/release 隔离避免双实例抢热键）；`quick_terminal_commands.rs` 提供 `toggle_quick_terminal` / `hide_quick_terminal` / `quick_terminal_update_shortcut`，单例窗口 label `popup-quick-terminal`、顶部对齐、主显示器全宽、高度按 fraction（clamp 15%-85%）、无边框、置顶、不进任务栏；隐藏不销毁窗口，PTY/滚动缓冲/光标保留。会话 cwd 用用户 home（`createSession` 链路会过 `validate_launch_cwd`，空路径会被拒）。全局热键在 `lib.rs` setup 注册，注册失败仅记日志不阻断启动。
+> - 前端：`PopupTabData` 支持 `sessionId: null` + `mode: "quick"`，首挂载时 `TerminalView` 自建会话并回传；quick 模式下自动聚焦输入（首建 + 每次窗口获焦/可见），`autoHideOnBlur` 开启时失焦 120ms 防抖后自动收起（设置读取失败则不隐藏，避免误藏）。设置 UI 在「终端」页新增 Quick Terminal 分区，快捷键改动立即走 `quick_terminal_update_shortcut`（unregister 旧 + register 新），不依赖保存。
+> - 验证边界：**已验证（任意平台）**：`cargo check` 通过；后端 11 个 quick_terminal 单测 + cc-panes-core 7 个设置单测通过；`tsc --noEmit` 通过；popupWindowService/settingsService 22 个前端单测通过。**Windows-host-required（未真机验证）**：全局热键实际触发、窗口 show/hide 几何与置顶行为、blur 自动收起体感、跨 dev/release 双实例热键共存。会话进状态机/通知体系（F1.4）与「在主窗口打开」接管尚未做真机走查。
+
 ### F2 拖文件进终端：shell 引号转义 + WSL 路径转换 · P0
 
 > **更正（实施期核对）**：拖拽本身**已实现**——`terminal/terminalDragDrop.ts` 监听 Tauri `onDragDropEvent`，drop 落在终端宿主内即把路径粘贴进去（`isDropInsideTerminalHost` 做了命区判定，多文件以空格 join）。原 PRD「终端本体不支持」的描述有误，已据代码改正。

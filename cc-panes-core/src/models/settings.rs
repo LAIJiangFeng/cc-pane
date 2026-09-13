@@ -4,6 +4,7 @@ use std::collections::HashMap;
 // OrchestratorSettings 已拆到独立模块（settings.rs 触到行数棘轮上限），
 // 在此重导出以保持既有 import 路径不变。
 pub use super::orchestrator_settings::OrchestratorSettings;
+pub use super::quick_terminal_settings::QuickTerminalSettings;
 
 const DEFAULT_TERMINAL_FONT_SIZE: u16 = 15;
 const MIN_TERMINAL_FONT_SIZE: u16 = 10;
@@ -39,6 +40,8 @@ pub struct AppSettings {
     pub tips: TipsSettings,
     #[serde(default)]
     pub screenshot: ScreenshotSettings,
+    #[serde(default)]
+    pub quick_terminal: QuickTerminalSettings,
     #[serde(default)]
     pub voice: VoiceSettings,
     #[serde(default)]
@@ -152,6 +155,7 @@ impl AppSettings {
         self.web_access.merge_missing_defaults();
         self.orchestrator.merge_missing_defaults();
         self.wallpaper.merge_missing_defaults();
+        self.quick_terminal.merge_missing_defaults();
     }
 }
 

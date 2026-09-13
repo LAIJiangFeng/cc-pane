@@ -8,9 +8,12 @@ import { invokeIfTauri, isTauriRuntime } from "./runtime";
 export interface PopupTabData {
   tabId: string;
   paneId: string;
-  sessionId: string;
+  /** null = 前端首次挂载时自建会话（F1 快捷终端走此路径） */
+  sessionId: string | null;
   projectPath: string;
   title: string;
+  /** "quick" = F1 全局快捷终端（Quake 式下拉）；缺省 = 普通 tab 弹出窗口 */
+  mode?: "quick";
   workspaceName?: string;
   providerId?: string;
   modelId?: string;

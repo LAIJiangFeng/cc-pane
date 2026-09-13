@@ -22,6 +22,7 @@ import {
   PanelsTopLeft,
   Settings,
   Share2,
+  SquareTerminal,
   Terminal,
   Wifi,
 } from "lucide-react";
@@ -51,6 +52,7 @@ export type SettingsPaneId =
   | "usage-stats"
   | "wallpaper"
   | "terminal"
+  | "quick-terminal"
   | "shortcuts"
   | "quick-commands"
   | "modules"
@@ -132,7 +134,7 @@ export const SETTINGS_PAGES: readonly SettingsPageDefinition[] = [
     icon: Terminal,
     titleKey: "pages.terminal.title",
     group: "application",
-    paneIds: ["terminal", "shortcuts"],
+    paneIds: ["terminal", "quick-terminal", "shortcuts"],
   },
   {
     id: "ai-tools",
@@ -281,6 +283,16 @@ export const SETTINGS_PANES: readonly SettingsPaneDefinition[] = [
       { id: "shell", titleKey: "shellAutoDetect", targetSectionId: "terminal-shell" },
       { id: "session-priority", titleKey: "lowerSessionPriority", descriptionKey: "lowerSessionPriorityHint", targetSectionId: "terminal-root" },
       { id: "daemon", titleKey: "terminalDaemon", descriptionKey: "terminalDaemonHint", targetSectionId: "terminal-root" },
+    ],
+  },
+  {
+    id: "quick-terminal",
+    icon: SquareTerminal,
+    titleKey: "quickTerminalTitle",
+    descriptionKey: "quickTerminalDesc",
+    page: "terminal",
+    searchEntries: [
+      { id: "quick-terminal", titleKey: "quickTerminalTitle", descriptionKey: "quickTerminalDesc", keywordsKey: "searchKeywords.quickTerminal", targetSectionId: "quick-terminal-root" },
     ],
   },
   {

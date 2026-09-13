@@ -14,6 +14,7 @@ export interface AppSettings {
   update: UpdateSettings;
   tips: TipsSettings;
   screenshot: ScreenshotSettings;
+  quickTerminal: QuickTerminalSettings;
   voice: VoiceSettings;
   cliLaunchers: CliLauncherSettings;
   layoutSwitcher: LayoutSwitcherSettings;
@@ -34,6 +35,19 @@ export interface ExperimentalSettings {
 }
 
 export type ExperimentalFeatureId = keyof ExperimentalSettings;
+
+/** F1 全局快捷终端设置（镜像 cc-panes-core QuickTerminalSettings）。
+ * Quake 式下拉终端：全局热键 toggle，单例置顶窗口，hide 不销毁（PTY 保留）。 */
+export interface QuickTerminalSettings {
+  /** 是否启用全局热键 toggle 快捷终端 */
+  enabled: boolean;
+  /** 全局热键（如 "Ctrl+Alt+Q"；dev 默认 "Ctrl+Alt+Shift+Q" 避免与 release 冲突） */
+  shortcut: string;
+  /** 窗口失焦时自动收起 */
+  autoHideOnBlur: boolean;
+  /** 窗口高度占主显示器高度比例（clamp [0.15, 0.85]） */
+  heightFraction: number;
+}
 
 /** IM 外推渠道类型（镜像 cc-notify ChannelType） */
 export type ImChannelType =

@@ -6,14 +6,20 @@
 import { useEffect, useCallback, useRef, useState } from "react";
 import { useTabViewStateStore } from "@/stores/useTabViewStateStore";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import TerminalView from "@/components/panes/TerminalView";
+import TerminalView, { type TerminalViewHandle } from "@/components/panes/TerminalView";
 import { getPopupTabData } from "@/services/popupWindowService";
 import type { PopupTabData } from "@/services/popupWindowService";
+import { hideQuickTerminal } from "@/services/quickTerminalService";
+import { settingsService } from "@/services/settingsService";
 
 export default function PopupTerminalWindow() {
   const sessionCreatedRef = useRef(false);
+  const terminalHandleRef = useRef<TerminalViewHandle>(null);
   const [tabData, setTabData] = useState<PopupTabData | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // F1 快捷终端（docs/105）：tabData.mode === "quick" 时为 Quake 式下拉窗口，
+  // 额外行为：自动聚焦输入、失焦自动收起（受设置 autoHideOnBlur 控制）。
+  const isQuick = tabData?.mode === "quick";
 
   // 启动时通过 IPC 获取 tabData
   useEffect(() => {
@@ -69,7 +75,50 @@ export default function PopupTerminalWindow() {
 
   const handleSessionCreated = useCallback(() => {
     sessionCreatedRef.current = true;
-  }, []);
+    // 快捷终端：会话建好后把光标送进终端（Quake 式呼出即可输入）
+    if (isQuick) {
+      requestAnimationFrame(() => terminalHandleRef.current?.focus());
+    }
+  }, [isQuick]);
+
+  // 快捷终端：窗口每次可见/获焦时聚焦终端（热键 toggle 唤出、点击窗口）。
+  useEffect(() => {
+    if (!isQuick) return;
+    const focusTerminal = () => terminalHandleRef.current?.focus();
+    document.addEventListener("visibilitychange", focusTerminal);
+    window.addEventListener("focus", focusTerminal);
+    return () => {
+      document.removeEventListener("visibilitychange", focusTerminal);
+      window.removeEventListener("focus", focusTerminal);
+    };
+  }, [isQuick]);
+
+  // 快捷终端：失焦自动收起（autoHideOnBlur，默认开）。读设置判定；
+  // 设置读不到时不回退隐藏，避免误藏用户正在用的窗口。
+  useEffect(() => {
+    if (!isQuick) return;
+    let cancelled = false;
+    let autoHide = false;
+    void settingsService
+      .getSettings()
+      .then((s) => {
+        if (!cancelled) autoHide = s.quickTerminal?.autoHideOnBlur ?? false;
+      })
+      .catch(() => {});
+    const onBlur = () => {
+      if (!autoHide) return;
+      // 瞬时失焦（窗口内部子元素抢焦）不算；确认真失焦后再藏。
+      setTimeout(() => {
+        if (document.hasFocus()) return;
+        void hideQuickTerminal().catch(console.error);
+      }, 120);
+    };
+    window.addEventListener("blur", onBlur);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("blur", onBlur);
+    };
+  }, [isQuick]);
 
   if (error) {
     return (
@@ -91,10 +140,12 @@ export default function PopupTerminalWindow() {
   return (
     <div className="h-screen w-screen overflow-hidden" style={{ background: "var(--app-terminal-bg)" }}>
       <TerminalView
+        ref={isQuick ? terminalHandleRef : undefined}
         sessionId={tabData.sessionId}
         projectPath={tabData.projectPath}
         visibilityOwnerId={tabData.tabId}
         viewRole="popup"
+        leafFocused
         workspaceName={tabData.workspaceName}
         providerId={tabData.providerId}
         modelId={tabData.modelId}

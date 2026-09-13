@@ -172,6 +172,7 @@ export type {
   ShellInfo,
   SearchScope,
   ScreenshotSettings,
+  QuickTerminalSettings,
   VoiceSettings,
   CliLauncherSettings,
   CliLauncherOverride,
