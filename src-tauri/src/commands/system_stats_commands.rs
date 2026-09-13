@@ -81,6 +81,7 @@ mod tests {
             current_tool_use_id: None,
             current_tool_summary: None,
             updated_at: 0,
+            osc_progress: None,
         }
     }
 

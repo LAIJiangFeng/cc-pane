@@ -649,6 +649,137 @@ pub struct SessionStatusInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current_tool_summary: Option<String>,
     pub updated_at: u64,
+    /// OSC 9;4（ConEmu 进度协议）兜底徽章。**独立于 `status`**：`status` 是 hook
+    /// 权威的会话状态机跃迁，本字段只驱动标签/侧栏的进度动画，绝不参与状态机
+    /// （F5.1）。两者并存时以 `status` 为准、徽章只叠加视觉，不打架（F5.2）。
+    /// `None` = 当前无 OSC 进度信号（已清除或 TTL 衰减）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub osc_progress: Option<OscProgressBadge>,
+}
+
+/// OSC 9;4 子状态（可序列化，跨界传给前端做徽章动画）。
+///
+/// 与 `osc_state_detect::ProgressState` 一一对应，但去掉了 `None`——「无进度」
+/// 在 `SessionStatusInfo` 里用 `osc_progress: None` 表达，不占一个枚举值。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OscProgressState {
+    /// 进行中（progress 为百分比）
+    Running,
+    /// 暂停/等待
+    Paused,
+    /// 错误
+    Error,
+    /// 不确定进度（忙但无百分比）
+    Indeterminate,
+}
+
+/// 前端活动徽章载荷（OSC 9;4 兜底通道）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OscProgressBadge {
+    pub state: OscProgressState,
+    /// 0-100 百分比；`Indeterminate`/`Paused`/`Error` 下可能无意义（CLI 可省略）。
+    pub progress: u8,
+}
+
+/// Running/Indeterminate 停更后的 TTL：CLI 崩溃/被 kill 时不会发 `9;4;0` 清除，
+/// 靠这个窗口让徽章自然消失，避免「卡死的进度条」。Paused/Error 是黏滞语义
+/// （ConEmu 协议要求显式 `9;4;0` 清除），不做 TTL 衰减。
+const OSC_PROGRESS_TTL_SECS: u64 = 10;
+
+/// 旁路存储条目：最近一次 OSC 9;4 信号 + 收到时刻（TTL 判定用）。
+#[derive(Debug, Clone, Copy)]
+struct OscProgressEntry {
+    badge: OscProgressBadge,
+    seen_at: Instant,
+}
+
+impl OscProgressEntry {
+    /// TTL 衰减：Running/Indeterminate 超窗返回 None（并应由调用方清条目）；
+    /// Paused/Error 黏滞，恒返回 Some。
+    fn resolve(&self, now: Instant) -> Option<OscProgressBadge> {
+        let sticky = matches!(
+            self.badge.state,
+            OscProgressState::Paused | OscProgressState::Error
+        );
+        if sticky {
+            return Some(self.badge);
+        }
+        if now.saturating_duration_since(self.seen_at).as_secs() > OSC_PROGRESS_TTL_SECS {
+            None
+        } else {
+            Some(self.badge)
+        }
+    }
+}
+
+/// 把检测器的 `ProgressState` 映射为可序列化徽章；`None` 子状态返回 `None`
+/// （表示清除徽章，调用方据此移除旁路条目）。
+fn osc_badge_from_signal(
+    state: osc_state_detect::ProgressState,
+    progress: u8,
+) -> Option<OscProgressBadge> {
+    use osc_state_detect::ProgressState as P;
+    let mapped = match state {
+        P::None => return None,
+        P::Running => OscProgressState::Running,
+        P::Paused => OscProgressState::Paused,
+        P::Error => OscProgressState::Error,
+        P::Indeterminate => OscProgressState::Indeterminate,
+    };
+    Some(OscProgressBadge {
+        state: mapped,
+        progress,
+    })
+}
+
+/// 从旁路存储解析当前徽章（含 TTL 衰减 + 过期条目清理）。
+/// 自由函数：读线程/等待线程持 `Arc` clone，无法走 `&self` 方法。
+fn resolve_osc_progress(
+    store: &parking_lot::RwLock<HashMap<String, OscProgressEntry>>,
+    session_id: &str,
+    now: Instant,
+) -> Option<OscProgressBadge> {
+    let mut map = store.write();
+    let entry = map.get(session_id)?;
+    match entry.resolve(now) {
+        Some(badge) => Some(badge),
+        None => {
+            map.remove(session_id);
+            None
+        }
+    }
+}
+
+/// OSC 9;4 进度信号落盘到旁路存储（F5 独立徽章通道）。
+///
+/// 只处理 `Progress` 变体，其余信号静默忽略。`9;4;0`（`ProgressState::None`）
+/// 映射为 `None` → 移除条目（ConEmu 协议的显式清除）；其余状态写入/覆盖条目
+/// 并刷新 `seen_at`（TTL 基准）。**绝不触碰状态机**（F5.1）。
+fn apply_osc_progress_signal(
+    store: &parking_lot::RwLock<HashMap<String, OscProgressEntry>>,
+    session_id: &str,
+    signal: &osc_state_detect::OscSignal,
+) {
+    use osc_state_detect::OscSignal;
+    let OscSignal::Progress { state, progress } = signal else {
+        return;
+    };
+    match osc_badge_from_signal(*state, *progress) {
+        Some(badge) => {
+            store.write().insert(
+                session_id.to_string(),
+                OscProgressEntry {
+                    badge,
+                    seen_at: Instant::now(),
+                },
+            );
+        }
+        None => {
+            store.write().remove(session_id);
+        }
+    }
 }
 
 // ============ 输出缓冲区 ============
@@ -1380,6 +1511,12 @@ pub struct TerminalService {
     /// 每个 session 独立串行化所有输入写入，避免键盘输入、粘贴和 submit 互相交错。
     // Arc 以便自然退出的 wait 线程也能清理条目（kill 走 &self，wait 走 move 闭包）
     input_mutexes: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
+    /// OSC 9;4 进度徽章旁路存储（F5）。**独立于 `SessionStateEntry`**：往状态机
+    /// 条目里塞 progress 会污染 `last_hook_event_at`（被 `seconds_since_last_hook`
+    /// 用作 hook 活跃判定），给无 hook 的 OSC-only CLI 误关 ANSI 推断降级。
+    /// 生命周期：read 线程写入、build_session_status_info 读取（含 TTL 衰减）、
+    /// 会话结束（wait 线程 / kill）清条目。
+    osc_progress_store: Arc<parking_lot::RwLock<HashMap<String, OscProgressEntry>>>,
 }
 
 struct SshAuthRuntime {
@@ -1749,12 +1886,16 @@ fn build_session_status_info(
     pid: Option<u32>,
     exit_code: Option<i32>,
     state_machine: Option<&Arc<crate::services::SessionStateMachine>>,
+    osc_store: Option<&parking_lot::RwLock<HashMap<String, OscProgressEntry>>>,
 ) -> SessionStatusInfo {
     let snapshot = state_machine.and_then(|sm| sm.snapshot(&session_id));
     let effective_status = state_machine
         .map(|sm| sm.status_for_query(&session_id, status))
         .unwrap_or(status);
     let stale_busy_fallback = status.is_busy() && effective_status == SessionStatus::Idle;
+    // F5：OSC 9;4 徽章注入（含 TTL 衰减）。独立于 effective_status，只叠加视觉。
+    let osc_progress =
+        osc_store.and_then(|store| resolve_osc_progress(store, &session_id, Instant::now()));
     SessionStatusInfo {
         session_id,
         status: effective_status,
@@ -1786,6 +1927,7 @@ fn build_session_status_info(
             .as_ref()
             .map(|entry| entry.updated_at)
             .unwrap_or(last_output_at),
+        osc_progress,
     }
 }
 
@@ -1841,6 +1983,7 @@ impl TerminalService {
             launch_profile_service: parking_lot::RwLock::new(None),
             workspace_service: parking_lot::RwLock::new(None),
             input_mutexes: Arc::new(Mutex::new(HashMap::new())),
+            osc_progress_store: Arc::new(parking_lot::RwLock::new(HashMap::new())),
         }
     }
 
@@ -3860,6 +4003,8 @@ impl TerminalService {
             .lock()
             .ok()
             .and_then(|g| g.as_ref().cloned());
+        // F5：OSC 9;4 徽章旁路存储 clone 进 read 线程（Progress 信号落盘点）
+        let read_osc_store = Arc::clone(&self.osc_progress_store);
         thread::spawn(move || {
             let mut buf = [0u8; 4096];
             let prev_status = Mutex::new(SessionStatus::Active);
@@ -3984,13 +4129,17 @@ impl TerminalService {
                         });
 
                         // OSC 状态信号（in-band 通道）：hook 的 terminalSequence 标记、
-                        // shell 集成的 133 命令边界、OSC 9 通知。信号汇入状态机，
-                        // 与 HTTP hook 通道在 on_event_with_channel 内跨通道去重。
-                        if let Some(sm) = read_state_machine.as_ref() {
-                            osc_detector.process(data.as_bytes(), |signal| {
+                        // shell 集成的 133 命令边界、OSC 9 通知、OSC 9;4 进度。
+                        // 状态类信号汇入状态机（与 HTTP hook 通道在
+                        // on_event_with_channel 内跨通道去重）；Progress 走独立
+                        // 旁路存储，**不进状态机**（F5.1），所以处理不被 sm 门控——
+                        // OSC-only CLI（无 hook）也要能显示进度徽章。
+                        osc_detector.process(data.as_bytes(), |signal| {
+                            apply_osc_progress_signal(&read_osc_store, &sid, &signal);
+                            if let Some(sm) = read_state_machine.as_ref() {
                                 apply_osc_signal(sm, &sid, signal);
-                            });
-                        }
+                            }
+                        });
 
                         // 更新状态
                         {
@@ -4151,6 +4300,7 @@ impl TerminalService {
                                         Some(reader_pid),
                                         None,
                                         read_state_machine.as_ref(),
+                                        Some(&read_osc_store),
                                     ))
                                     .unwrap_or_default(),
                                 );
@@ -4195,6 +4345,8 @@ impl TerminalService {
             .lock()
             .ok()
             .and_then(|g| g.as_ref().cloned());
+        // F5：徽章旁路存储 clone 进 wait 线程（退出时清条目 + 最终状态注入）
+        let wait_osc_store = Arc::clone(&self.osc_progress_store);
         thread::spawn(move || {
             let process_exit_code = match process_for_wait.wait() {
                 Ok(status) => {
@@ -4287,6 +4439,8 @@ impl TerminalService {
             if let Some(sm) = wait_state_machine.as_ref() {
                 sm.force_exited(&sid);
             }
+            // F5：会话结束清掉徽章旁路条目，最终状态 emit 自然带 None
+            wait_osc_store.write().remove(&sid);
 
             // 发送退出通知
             wait_notifier.notify_session_exited(&sid, process_exit_code);
@@ -4314,6 +4468,7 @@ impl TerminalService {
                         Some(wait_pid),
                         Some(process_exit_code),
                         wait_state_machine.as_ref(),
+                        Some(&wait_osc_store),
                     ))
                     .unwrap_or_default(),
                 );
@@ -4549,6 +4704,7 @@ impl TerminalService {
                         .ok()
                         .and_then(|guard| guard.as_ref().cloned())
                         .as_ref(),
+                    Some(&self.osc_progress_store),
                 )
             })
             .collect())
@@ -4583,6 +4739,7 @@ impl TerminalService {
                         .ok()
                         .and_then(|guard| guard.as_ref().cloned())
                         .as_ref(),
+                    Some(&self.osc_progress_store),
                 )));
             }
         }
@@ -4608,6 +4765,7 @@ impl TerminalService {
                     .ok()
                     .and_then(|guard| guard.as_ref().cloned())
                     .as_ref(),
+                Some(&self.osc_progress_store),
             )
         }))
     }
@@ -4844,6 +5002,8 @@ impl TerminalService {
         if let Ok(mut input_mutexes) = self.input_mutexes.lock() {
             input_mutexes.remove(session_id);
         }
+        // F5：kill 路径同步清徽章旁路条目（wait 线程只覆盖自然退出）
+        self.osc_progress_store.write().remove(session_id);
         wsl_codex::cleanup_session_mcp_configs(self.app_paths.data_dir(), session_id);
 
         if let Some(session) = session {
@@ -5470,6 +5630,7 @@ impl TerminalService {
                             .ok()
                             .and_then(|guard| guard.as_ref().cloned())
                             .as_ref(),
+                        Some(&self.osc_progress_store),
                     ))
                     .unwrap_or_default(),
                 );
@@ -5630,6 +5791,10 @@ fn apply_osc_signal(
                 serde_json::json!({"exit_code": exit_code, "source": "osc"}),
             ),
         },
+        // OSC 9;4 进度是独立徽章通道（F5.1），由 apply_osc_progress_signal 落盘到
+        // 旁路存储，**绝不进状态机**。这里显式吞掉，既修复非穷尽匹配，也防止
+        // 未来误把 Progress 接进状态跃迁、覆盖 hook 权威。
+        OscSignal::Progress { .. } => return,
     };
     sm.on_event_with_channel(session_id, &event, None, &payload, EventChannel::Osc);
 }
@@ -5816,6 +5981,199 @@ mod tests {
     use crate::models::provider::{Provider, ProviderModel, ProviderType};
     use crate::models::settings::CliLauncherOverride;
     use crate::services::SharedMcpService;
+
+    // ---- F5：OSC 9;4 进度徽章旁路通道单元测试 ----
+    //
+    // 验证 docs/105 F5 三条硬约束：
+    //   F5.1 Progress 是独立徽章通道，落盘/清除只动旁路 store，绝不触碰状态机；
+    //   F5.2 徽章不覆盖 hook 权威 status（此处只测旁路 store 的纯函数语义，
+    //        status 不重叠由 build_session_status_info 的注入点保证）；
+    //   F5.3 Running/Indeterminate 停更约 10s TTL 衰减，Paused/Error 黏滞。
+    mod osc_progress_badge {
+        use super::super::osc_state_detect::{OscSignal, ProgressState};
+        use super::*;
+
+        fn store() -> parking_lot::RwLock<HashMap<String, OscProgressEntry>> {
+            parking_lot::RwLock::new(HashMap::new())
+        }
+
+        fn progress(state: ProgressState, p: u8) -> OscSignal {
+            OscSignal::Progress { state, progress: p }
+        }
+
+        #[test]
+        fn running_signal_lands_in_store() {
+            let s = store();
+            apply_osc_progress_signal(&s, "sess-1", &progress(ProgressState::Running, 50));
+            let badge = resolve_osc_progress(&s, "sess-1", Instant::now());
+            assert_eq!(
+                badge,
+                Some(OscProgressBadge {
+                    state: OscProgressState::Running,
+                    progress: 50
+                })
+            );
+        }
+
+        #[test]
+        fn explicit_clear_removes_entry() {
+            let s = store();
+            apply_osc_progress_signal(&s, "sess-1", &progress(ProgressState::Running, 50));
+            // 9;4;0 → ProgressState::None → 显式清除
+            apply_osc_progress_signal(&s, "sess-1", &progress(ProgressState::None, 0));
+            assert_eq!(resolve_osc_progress(&s, "sess-1", Instant::now()), None);
+            assert!(!s.read().contains_key("sess-1"));
+        }
+
+        #[test]
+        fn running_decays_after_ttl_and_entry_is_dropped() {
+            let s = store();
+            // 直接植入一条 20s 前的 Running（超过 10s TTL）
+            s.write().insert(
+                "sess-1".to_string(),
+                OscProgressEntry {
+                    badge: OscProgressBadge {
+                        state: OscProgressState::Running,
+                        progress: 70,
+                    },
+                    seen_at: Instant::now() - Duration::from_secs(OSC_PROGRESS_TTL_SECS + 10),
+                },
+            );
+            assert_eq!(resolve_osc_progress(&s, "sess-1", Instant::now()), None);
+            // 过期条目被 resolve 顺手清掉，避免 map 泄漏
+            assert!(!s.read().contains_key("sess-1"));
+        }
+
+        #[test]
+        fn running_within_ttl_still_resolves() {
+            let s = store();
+            s.write().insert(
+                "sess-1".to_string(),
+                OscProgressEntry {
+                    badge: OscProgressBadge {
+                        state: OscProgressState::Running,
+                        progress: 70,
+                    },
+                    seen_at: Instant::now() - Duration::from_secs(OSC_PROGRESS_TTL_SECS - 3),
+                },
+            );
+            assert_eq!(
+                resolve_osc_progress(&s, "sess-1", Instant::now()),
+                Some(OscProgressBadge {
+                    state: OscProgressState::Running,
+                    progress: 70
+                })
+            );
+        }
+
+        #[test]
+        fn paused_is_sticky_past_ttl() {
+            let s = store();
+            s.write().insert(
+                "sess-1".to_string(),
+                OscProgressEntry {
+                    badge: OscProgressBadge {
+                        state: OscProgressState::Paused,
+                        progress: 30,
+                    },
+                    seen_at: Instant::now() - Duration::from_secs(OSC_PROGRESS_TTL_SECS + 999),
+                },
+            );
+            // Paused/Error 黏滞：ConEmu 协议要求显式 9;4;0 清除，不做 TTL 衰减
+            assert_eq!(
+                resolve_osc_progress(&s, "sess-1", Instant::now()),
+                Some(OscProgressBadge {
+                    state: OscProgressState::Paused,
+                    progress: 30
+                })
+            );
+        }
+
+        #[test]
+        fn error_is_sticky_past_ttl() {
+            let s = store();
+            s.write().insert(
+                "sess-1".to_string(),
+                OscProgressEntry {
+                    badge: OscProgressBadge {
+                        state: OscProgressState::Error,
+                        progress: 10,
+                    },
+                    seen_at: Instant::now() - Duration::from_secs(OSC_PROGRESS_TTL_SECS + 999),
+                },
+            );
+            assert_eq!(
+                resolve_osc_progress(&s, "sess-1", Instant::now()),
+                Some(OscProgressBadge {
+                    state: OscProgressState::Error,
+                    progress: 10
+                })
+            );
+        }
+
+        #[test]
+        fn badge_mapping_covers_all_states_and_clears_on_none() {
+            assert_eq!(osc_badge_from_signal(ProgressState::None, 0), None);
+            assert_eq!(
+                osc_badge_from_signal(ProgressState::Running, 42),
+                Some(OscProgressBadge {
+                    state: OscProgressState::Running,
+                    progress: 42
+                })
+            );
+            assert_eq!(
+                osc_badge_from_signal(ProgressState::Paused, 7),
+                Some(OscProgressBadge {
+                    state: OscProgressState::Paused,
+                    progress: 7
+                })
+            );
+            assert_eq!(
+                osc_badge_from_signal(ProgressState::Error, 9),
+                Some(OscProgressBadge {
+                    state: OscProgressState::Error,
+                    progress: 9
+                })
+            );
+            assert_eq!(
+                osc_badge_from_signal(ProgressState::Indeterminate, 0),
+                Some(OscProgressBadge {
+                    state: OscProgressState::Indeterminate,
+                    progress: 0
+                })
+            );
+        }
+
+        #[test]
+        fn non_progress_signals_are_ignored() {
+            let s = store();
+            // F5.1：Progress 以外的 OSC 信号绝不动旁路 store（更不进状态机）
+            apply_osc_progress_signal(
+                &s,
+                "sess-1",
+                &OscSignal::Event {
+                    name: "turn-end".to_string(),
+                },
+            );
+            apply_osc_progress_signal(&s, "sess-1", &OscSignal::CommandExited { exit_code: Some(0) });
+            assert!(s.read().is_empty());
+        }
+
+        #[test]
+        fn sessions_are_isolated_in_store() {
+            let s = store();
+            apply_osc_progress_signal(&s, "a", &progress(ProgressState::Running, 10));
+            apply_osc_progress_signal(&s, "b", &progress(ProgressState::Paused, 20));
+            assert_eq!(
+                resolve_osc_progress(&s, "a", Instant::now()).map(|b| b.state),
+                Some(OscProgressState::Running)
+            );
+            assert_eq!(
+                resolve_osc_progress(&s, "b", Instant::now()).map(|b| b.state),
+                Some(OscProgressState::Paused)
+            );
+        }
+    }
 
     /// PTY 是字节流，转义序列会被切在任意位置。`strip_ansi_escapes` 对未终止的序列是
     /// **整段吞掉**（连 ESC 一起），所以前半不可恢复、后半丢了前缀就当正文留下——

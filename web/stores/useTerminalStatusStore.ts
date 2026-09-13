@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { registerSessionScopedResource } from "@/lib/tabLifecycle/sessionScopedResources";
-import type { TerminalStatusType, TerminalStatusInfo } from "@/types";
+import type { OscProgressBadge, TerminalStatusType, TerminalStatusInfo } from "@/types";
 import { killedSessions, terminalService } from "@/services/terminalService";
 import { isTauriRuntime, listenWebviewIfTauri } from "@/services/runtime";
 
@@ -13,6 +13,8 @@ interface TerminalStatusState {
   _idleCheckInterval: ReturnType<typeof setInterval> | null;
   _initialized: boolean;
   getStatus: (sessionId: string | null) => TerminalStatusType | null;
+  /** OSC 9;4 进度徽章（F5）；null = 无信号。独立于 getStatus，绝不参与状态判定。 */
+  getOscProgress: (sessionId: string | null) => OscProgressBadge | null;
   removeSession: (sessionId: string) => void;
   markSessionLive: (sessionId: string) => void;
   replaceLiveStatuses: (statuses: TerminalStatusInfo[]) => void;
@@ -30,6 +32,11 @@ export const useTerminalStatusStore = create<TerminalStatusState>((set, get) => 
   getStatus: (sessionId) => {
     if (!sessionId) return null;
     return get().statusMap.get(sessionId)?.status ?? null;
+  },
+
+  getOscProgress: (sessionId) => {
+    if (!sessionId) return null;
+    return get().statusMap.get(sessionId)?.oscProgress ?? null;
   },
 
   removeSession: (sessionId) => {
@@ -93,7 +100,9 @@ export const useTerminalStatusStore = create<TerminalStatusState>((set, get) => 
           current.updatedAt === event.payload.updatedAt &&
           current.currentToolName === event.payload.currentToolName &&
           current.currentToolUseId === event.payload.currentToolUseId &&
-          current.currentToolSummary === event.payload.currentToolSummary
+          current.currentToolSummary === event.payload.currentToolSummary &&
+          current.oscProgress?.state === event.payload.oscProgress?.state &&
+          current.oscProgress?.progress === event.payload.oscProgress?.progress
         ) {
           return;
         }

@@ -7,9 +7,14 @@
 //! - `OSC 133;C;<cmd>` / `OSC 133;D;<exit>` — shell 集成命令边界：
 //!   命令行匹配已知 agent 时武装检测器，`D` 携带退出码
 //!
-//! 不识别 OSC 9 / 非 CCPanes 的 777：任意第三方通知都会被映射成状态跃迁，
+//! 不识别非 CCPanes 的 777：任意第三方通知都会被映射成状态跃迁，
 //! agent 工作期间的一条桌面通知就能把状态误标成"等待输入"（审阅发现），
 //! 收益不抵误报。
+//!
+//! `OSC 9;4`（ConEmu 进度协议）例外：识别其 running/paused/error/indeterminate
+//! 子状态，但只产出 `OscSignal::Progress`——**独立徽章通道，绝不进入会话
+//! 状态机**（docs/105 F5.2：hook 权威状态优先，徽章不与之打架）。
+//! 普通桌面通知 `9;<文本>` 仍被忽略。
 //!
 //! 设计原则（移植自 Terax agent_detect.rs, MIT）：状态信号**只来自 OSC 序列，
 //! 绝不来自原始输出文本**——TUI 持续重绘不会引起任何状态抖动。Ground 态按
@@ -53,6 +58,24 @@ pub(super) enum OscSignal {
     Event { name: String },
     /// `133;D;<exit>`：武装期间的命令结束，退出码可能缺失
     CommandExited { exit_code: Option<i32> },
+    /// `9;4;<state>[;<progress>]`：ConEmu 进度协议，**仅用于前端活动徽章动画**
+    /// （F5 兜底通道），不参与状态机跃迁。progress 为 0-100（state=0 无意义）。
+    Progress { state: ProgressState, progress: u8 },
+}
+
+/// `OSC 9;4` 子状态（ConEmu 协议值，Pebrel 1.4.1 同款语义）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum ProgressState {
+    /// 0：无进度（清除徽章）
+    None,
+    /// 1：进行中（progress 为百分比，可省略）
+    Running,
+    /// 2：暂停/等待（如需要输入）
+    Paused,
+    /// 3：错误
+    Error,
+    /// 4：不确定进度（忙但无百分比）
+    Indeterminate,
 }
 
 /// 字节级 OSC 解析状态机。每个 PTY 会话一个实例，读线程独占，无锁。
@@ -144,8 +167,41 @@ impl OscStateDetector {
         match ps {
             b"133" => self.handle_osc133(pt, emit),
             b"777" => self.handle_osc777(pt, emit),
+            b"9" => self.handle_osc9(pt, emit),
             _ => {}
         }
+    }
+
+    /// `9;4;<state>[;<progress>]` → Progress 信号。
+    /// 只认 state ≤ 4；`9;<通知文本>` 等非进度格式静默忽略（保持原有防误报约束）。
+    /// 不武装、不发 Started、不进状态机——纯徽章兜底通道。
+    fn handle_osc9<F: FnMut(OscSignal)>(&mut self, pt: &[u8], emit: &mut F) {
+        let Some(tail) = pt.strip_prefix(b"4;") else {
+            return;
+        };
+        let Ok(text) = std::str::from_utf8(tail) else {
+            return;
+        };
+        let (state_s, progress_s) = match text.split_once(';') {
+            Some((a, b)) => (a, Some(b)),
+            None => (text, None),
+        };
+        let Ok(state_num) = state_s.trim().parse::<u8>() else {
+            return;
+        };
+        let state = match state_num {
+            0 => ProgressState::None,
+            1 => ProgressState::Running,
+            2 => ProgressState::Paused,
+            3 => ProgressState::Error,
+            4 => ProgressState::Indeterminate,
+            _ => return,
+        };
+        let progress = progress_s
+            .and_then(|s| s.trim().parse::<u16>().ok())
+            .unwrap_or(0)
+            .min(100) as u8;
+        emit(OscSignal::Progress { state, progress });
     }
 
     fn handle_osc777<F: FnMut(OscSignal)>(&mut self, pt: &[u8], emit: &mut F) {
@@ -330,7 +386,85 @@ mod tests {
         run(&mut d, &osc("133;C;codex"));
         assert!(run(&mut d, &osc("777;notify;Other;ready")).is_empty());
         assert!(run(&mut d, &osc("9;needs you")).is_empty());
-        assert!(run(&mut d, &osc("9;4;1;50")).is_empty());
+    }
+
+    fn progress(state: ProgressState, p: u8) -> OscSignal {
+        OscSignal::Progress { state, progress: p }
+    }
+
+    #[test]
+    fn osc94_maps_progress_states() {
+        // F5 徽章兜底通道：running/paused/error/indeterminate/none 各子状态
+        let mut d = OscStateDetector::new();
+        assert_eq!(
+            run(&mut d, &osc("9;4;1;50")),
+            vec![progress(ProgressState::Running, 50)]
+        );
+        assert_eq!(
+            run(&mut d, &osc("9;4;2;0")),
+            vec![progress(ProgressState::Paused, 0)]
+        );
+        assert_eq!(
+            run(&mut d, &osc("9;4;3")),
+            vec![progress(ProgressState::Error, 0)]
+        );
+        assert_eq!(
+            run(&mut d, &osc("9;4;4;100")),
+            vec![progress(ProgressState::Indeterminate, 100)]
+        );
+        assert_eq!(
+            run(&mut d, &osc("9;4;0")),
+            vec![progress(ProgressState::None, 0)]
+        );
+    }
+
+    #[test]
+    fn osc94_does_not_arm_or_touch_state_machine() {
+        // Progress 是独立通道：不武装（后续 133;D 仍无信号），不发 Started/Event
+        let mut d = OscStateDetector::new();
+        assert_eq!(
+            run(&mut d, &osc("9;4;1;50")),
+            vec![progress(ProgressState::Running, 50)]
+        );
+        assert!(!d.armed);
+        // 未武装：133;D 不产生 CommandExited（证明没进状态机通道）
+        assert!(run(&mut d, &osc("133;D;0")).is_empty());
+    }
+
+    #[test]
+    fn osc94_clamps_and_rejects_bad_values() {
+        let mut d = OscStateDetector::new();
+        // progress > 100 钳制到 100
+        assert_eq!(
+            run(&mut d, &osc("9;4;1;255")),
+            vec![progress(ProgressState::Running, 100)]
+        );
+        // 非法 state（>4）忽略
+        assert!(run(&mut d, &osc("9;4;5;10")).is_empty());
+        // 非进度格式的 OSC 9（纯通知文本）仍忽略——保持防误报约束
+        assert!(run(&mut d, &osc("9;some notification text")).is_empty());
+        // 非数字 state 忽略
+        assert!(run(&mut d, &osc("9;4;abc;10")).is_empty());
+    }
+
+    #[test]
+    fn osc94_bel_terminated_and_split_chunks() {
+        // BEL 终止符同样解析
+        let mut d = OscStateDetector::new();
+        let mut seq = vec![ESC, OSC_INTRO];
+        seq.extend_from_slice(b"9;4;1;75");
+        seq.push(BEL);
+        assert_eq!(
+            run(&mut d, &seq),
+            vec![progress(ProgressState::Running, 75)]
+        );
+        // 跨 chunk 分片
+        let mut d2 = OscStateDetector::new();
+        assert!(run(&mut d2, &[ESC, OSC_INTRO]).is_empty());
+        assert!(run(&mut d2, b"9;4;2").is_empty());
+        let mut out = run(&mut d2, b";30");
+        out.extend(run(&mut d2, &[ESC, ST_FINAL]));
+        assert_eq!(out, vec![progress(ProgressState::Paused, 30)]);
     }
 
     #[test]

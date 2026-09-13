@@ -441,6 +441,19 @@ export function isBusyStatus(status: TerminalStatusType | null | undefined): boo
   return status != null && BUSY_STATUSES.has(status);
 }
 
+/** OSC 9;4（ConEmu 进度协议）子状态，对应后端 `OscProgressState`（camelCase 序列化）。 */
+export type OscProgressState = "running" | "paused" | "error" | "indeterminate";
+
+/**
+ * OSC 9;4 兜底徽章载荷（F5）。**独立于 `status`**：status 是 hook 权威的会话
+ * 状态机，本字段只驱动徽章动画叠加层，绝不参与状态判定（hook 优先）。
+ */
+export interface OscProgressBadge {
+  state: OscProgressState;
+  /** 0-100 百分比；indeterminate/paused/error 下可能无意义（CLI 可省略）。 */
+  progress: number;
+}
+
 /** 终端状态信息 */
 export interface TerminalStatusInfo {
   sessionId: string;
@@ -452,4 +465,6 @@ export interface TerminalStatusInfo {
   currentToolUseId?: string;
   currentToolSummary?: string;
   updatedAt: number;
+  /** OSC 9;4 进度徽章；undefined/null = 无信号（已清除或 TTL 衰减）。 */
+  oscProgress?: OscProgressBadge | null;
 }

@@ -14291,6 +14291,7 @@ mod tests {
             current_tool_use_id: None,
             current_tool_summary: None,
             updated_at: 0,
+            osc_progress: None,
         }
     }
 
@@ -17017,6 +17018,7 @@ mod tests {
                 current_tool_use_id: None,
                 current_tool_summary: None,
                 updated_at: 0,
+                osc_progress: None,
             });
         }
 
@@ -17057,6 +17059,7 @@ mod tests {
                 current_tool_use_id: None,
                 current_tool_summary: None,
                 updated_at: 0,
+                osc_progress: None,
             });
             Ok(session_id)
         }

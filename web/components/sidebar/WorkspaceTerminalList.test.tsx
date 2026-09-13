@@ -30,6 +30,7 @@ function row(overrides: Partial<WorkspaceTerminalRow> = {}): WorkspaceTerminalRo
     firstPrompt: null,
     status: "thinking",
     toolName: null,
+    oscProgress: null,
     sessionCount: 1,
     ...overrides,
   };

@@ -167,6 +167,8 @@ export type {
   TipsSettings,
   TerminalStatusType,
   TerminalStatusInfo,
+  OscProgressState,
+  OscProgressBadge,
   DataDirInfo,
   UninstallCleanupReport,
   ShellInfo,
