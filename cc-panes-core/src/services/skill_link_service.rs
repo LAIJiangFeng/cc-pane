@@ -619,13 +619,20 @@ mod tests {
         write_skill(&master, "tdd", "tdd", "Test-driven development");
         write_skill(&master, "grilling", "grilling", "Grill the user");
         let cfg_path = master_tmp.path().join("config.json");
-        let mut config = SkillLinkConfig::default();
-        config.master_dir = master.to_string_lossy().into_owned();
-        config.workspaces.push(LinkWorkspace {
+        // 在默认 workspaces（含「全局（用户级）」）之上追加测试用 proj，行为与
+        // 旧 `Default::default()` + 逐字段赋值/push 完全一致；struct-update 语法
+        // 同时满足 clippy::field_reassign_with_default。
+        let mut workspaces = default_workspaces();
+        workspaces.push(LinkWorkspace {
             name: "proj".into(),
             path: ws_root.to_string_lossy().into_owned(),
         });
-        config.active_workspace = "proj".into();
+        let config = SkillLinkConfig {
+            master_dir: master.to_string_lossy().into_owned(),
+            active_workspace: "proj".into(),
+            workspaces,
+            ..Default::default()
+        };
         let service = SkillLinkService::with_config(cfg_path, config);
         Fixture {
             _master_tmp: master_tmp,
