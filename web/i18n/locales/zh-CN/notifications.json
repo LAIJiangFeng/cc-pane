@@ -82,6 +82,14 @@
     "expand": "展开全文",
     "collapse": "收起",
     "paneLocation": "窗格 #{{index}}",
+    "quickTerminalLocation": "快捷终端窗口",
+    "adoptToMainWindow": "在主窗口打开",
+    "adoptFromQuickTerminal": {
+      "ok": "已在主窗口打开",
+      "not-found": "该会话已不在快捷终端，无法接管",
+      "claim-failed": "无法接管该会话（正被其他窗口使用）",
+      "adopt-failed": "在主窗口打开该会话失败"
+    },
     "timeJustNow": "刚刚",
     "timeMinutesAgo": "{{count}} 分钟前",
     "timeHoursAgo": "{{count}} 小时前",

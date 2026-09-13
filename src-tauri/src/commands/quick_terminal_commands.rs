@@ -16,7 +16,7 @@ use crate::utils::{AppError, AppResult};
 use cc_panes_core::models::quick_terminal_settings::{MAX_HEIGHT_FRACTION, MIN_HEIGHT_FRACTION};
 use std::path::Path;
 use std::sync::Arc;
-use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tracing::debug;
 
 /// 快捷终端窗口 label。`popup-` 前缀使其通过 `is_popup_window_label` 守卫，
@@ -25,6 +25,98 @@ pub const QUICK_TERMINAL_LABEL: &str = "popup-quick-terminal";
 
 /// 快捷终端在 PopupDataStore 中的 tabId，前端据此识别 quick 模式。
 pub const QUICK_TERMINAL_TAB_ID: &str = "quick-terminal";
+
+/// 快捷终端会话变更事件（F1.4）。
+///
+/// 载荷为 `Option<QuickTerminalSessionRecord>`：`Some` = 快捷终端里有一条活会话，
+/// `None` = 没有（窗口已销毁 / 会话已退出）。主窗口据此把快捷终端会话接进
+/// 通知定位与「在主窗口打开」接管。
+pub const QUICK_TERMINAL_SESSION_CHANGED_EVENT: &str = "quick-terminal-session-changed";
+
+/// 快捷终端里那条会话的登记项（docs/105 F1.4）。
+///
+/// 除了 `session_id`，还带上 `project_path` / `title`：快捷终端会话不在任何布局里，
+/// 也就不会被 `useSessionLayoutPersistence` 写进 `savedSessions`，主窗口接管
+/// （`panes.adoptSession`）时无处查它的 cwd。不带上就只能拿空路径建 tab，
+/// 而这个 tab 一旦被重建（分屏/恢复/重启）会在错误目录里重启。
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuickTerminalSessionRecord {
+    pub session_id: String,
+    /// 会话创建时的 cwd（快捷终端一律是用户 home）。
+    pub project_path: String,
+    /// 接管后新 tab 的标题，让它在主窗口里可辨认（缺省用项目名 = home 路径，很难读）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
+/// 快捷终端当前会话登记。
+///
+/// **为什么需要它**：快捷终端的 tab 不在任何布局里（它是独立窗口自建会话），主窗口
+/// 的 `findTabBySessionAcrossLayouts` 永远查不到 → 通知卡片连「聚焦会话」按钮都不
+/// 渲染。后端记下「哪条会话住在快捷终端窗口里」，主窗口才能在跨布局查不到时回退到
+/// 这一条，并把快捷窗口唤到前面。
+///
+/// 单值而非集合：快捷终端是单例窗口，同时只有一条会话。
+pub type QuickTerminalSessionStore = std::sync::Mutex<Option<QuickTerminalSessionRecord>>;
+
+fn lock_quick_terminal_session_store(
+    store: &QuickTerminalSessionStore,
+) -> AppResult<std::sync::MutexGuard<'_, Option<QuickTerminalSessionRecord>>> {
+    store
+        .lock()
+        .map_err(|e| AppError::from(format!("quick_terminal_session_store lock: {e}")))
+}
+
+/// 写入快捷终端会话登记；仅在值真正变化时广播（避免重复挂载触发的事件风暴）。
+/// 返回 `true` 表示发生了变更并已广播。
+fn set_quick_terminal_session_inner(
+    app: &AppHandle,
+    store: &QuickTerminalSessionStore,
+    record: Option<QuickTerminalSessionRecord>,
+) -> AppResult<bool> {
+    let changed = {
+        let mut guard = lock_quick_terminal_session_store(store)?;
+        if *guard == record {
+            false
+        } else {
+            *guard = record.clone();
+            true
+        }
+    };
+    if !changed {
+        return Ok(false);
+    }
+    // 广播失败不让调用方炸：写入已生效，主窗口下次 `get` 仍能拿到正确值。
+    if let Err(e) = app.emit(QUICK_TERMINAL_SESSION_CHANGED_EVENT, record.clone()) {
+        debug!("quick_terminal: failed to emit session change: {e}");
+    }
+    debug!("quick_terminal: session changed -> {:?}", record);
+    Ok(true)
+}
+
+/// 把前端传来的原始值归一化成登记项：空白 id / 空白 cwd 都不算有效登记。
+///
+/// `project_path` 缺失时回退到 home（与建窗时同一条解析），而不是拒登记：
+/// 登记丢了会让通知定位整个失效，代价远大于一份回退 cwd。
+fn build_quick_terminal_session_record(
+    session_id: Option<String>,
+    project_path: Option<String>,
+    title: Option<String>,
+) -> Option<QuickTerminalSessionRecord> {
+    let session_id = session_id.filter(|id| !id.trim().is_empty())?;
+    let project_path = project_path
+        .map(|path| path.trim().to_string())
+        .filter(|path| !path.is_empty())
+        .unwrap_or_else(resolve_quick_terminal_project_path);
+    Some(QuickTerminalSessionRecord {
+        session_id,
+        project_path,
+        title: title
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+    })
+}
 
 /// SettingsService 未托管时的回退高度比例（与 `QuickTerminalSettings::default` 一致）。
 const FALLBACK_HEIGHT_FRACTION: f64 = 0.4;
@@ -176,6 +268,70 @@ pub fn hide_quick_terminal(app: AppHandle) -> AppResult<()> {
         window.hide().map_err(|e| AppError::from(e.to_string()))?;
     }
     Ok(())
+}
+
+/// 上报快捷终端当前会话（F1.4）。
+///
+/// 由快捷终端窗口在 `TerminalView.onSessionCreated` 时调用；传 `None` 表示会话已结束。
+/// 跨布局查不到这条会话的通知会回退到这里，从而能把快捷窗口唤到前面。
+/// `project_path` / `title` 供「在主窗口打开」接管时建 tab 使用。
+#[tauri::command]
+pub fn set_quick_terminal_session(
+    app: AppHandle,
+    session_store: State<'_, QuickTerminalSessionStore>,
+    session_id: Option<String>,
+    project_path: Option<String>,
+    title: Option<String>,
+) -> AppResult<()> {
+    set_quick_terminal_session_inner(
+        &app,
+        &session_store,
+        build_quick_terminal_session_record(session_id, project_path, title),
+    )?;
+    Ok(())
+}
+
+/// 读取快捷终端当前会话登记（F1.4）。主窗口启动/窗口重建时补查，避免错过广播。
+#[tauri::command]
+pub fn get_quick_terminal_session(
+    session_store: State<'_, QuickTerminalSessionStore>,
+) -> AppResult<Option<QuickTerminalSessionRecord>> {
+    Ok(lock_quick_terminal_session_store(&session_store)?.clone())
+}
+
+/// 销毁快捷终端窗口（F1.4「在主窗口打开」接管后调用）。
+///
+/// **不杀 PTY**：销毁窗口只断掉它那条 WebSocket 订阅，后端没有 kill-on-disconnect，
+/// 会话仍活着 → 主窗口刚 adopt 的 tab 能 reattach 到同一条 PTY，历史与光标全保留。
+/// 同时清掉会话登记与 tabData，下次热键会重新建窗建会话。
+#[tauri::command]
+pub fn destroy_quick_terminal(
+    app: AppHandle,
+    popup_store: State<'_, PopupDataStore>,
+    session_store: State<'_, QuickTerminalSessionStore>,
+) -> AppResult<()> {
+    debug!("cmd::destroy_quick_terminal");
+    set_quick_terminal_session_inner(&app, &session_store, None)?;
+    if let Ok(mut guard) = popup_store.lock() {
+        guard.remove(QUICK_TERMINAL_LABEL);
+    }
+    if let Some(window) = app.get_webview_window(QUICK_TERMINAL_LABEL) {
+        window
+            .destroy()
+            .map_err(|e| AppError::from(format!("Failed to destroy quick terminal window: {e}")))?;
+    }
+    Ok(())
+}
+
+/// 窗口关闭路径（非 `destroy_quick_terminal`，如 Alt+F4）的会话登记清理。
+/// PTY 不受影响（同 destroy 说明），只是「住在快捷窗口里」这条映射失效了。
+pub fn clear_quick_terminal_session(app: &AppHandle) {
+    let Some(store) = app.try_state::<QuickTerminalSessionStore>() else {
+        return;
+    };
+    if let Err(e) = set_quick_terminal_session_inner(app, store.inner(), None) {
+        debug!("quick_terminal: clear session failed: {e}");
+    }
 }
 
 /// 更新快捷终端全局热键（设置 UI 调用）。仿 `screenshot_update_shortcut`：

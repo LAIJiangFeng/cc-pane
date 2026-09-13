@@ -9,7 +9,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import TerminalView, { type TerminalViewHandle } from "@/components/panes/TerminalView";
 import { getPopupTabData } from "@/services/popupWindowService";
 import type { PopupTabData } from "@/services/popupWindowService";
-import { hideQuickTerminal } from "@/services/quickTerminalService";
+import { hideQuickTerminal, reportQuickTerminalSession } from "@/services/quickTerminalService";
 import { settingsService } from "@/services/settingsService";
 
 export default function PopupTerminalWindow() {
@@ -73,12 +73,34 @@ export default function PopupTerminalWindow() {
     };
   }, [tabData?.tabId]);
 
-  const handleSessionCreated = useCallback(() => {
-    sessionCreatedRef.current = true;
-    // 快捷终端：会话建好后把光标送进终端（Quake 式呼出即可输入）
-    if (isQuick) {
-      requestAnimationFrame(() => terminalHandleRef.current?.focus());
-    }
+  const handleSessionCreated = useCallback(
+    (sessionId: string) => {
+      sessionCreatedRef.current = true;
+      // 快捷终端：会话建好后把光标送进终端（Quake 式呼出即可输入）
+      if (isQuick) {
+        requestAnimationFrame(() => terminalHandleRef.current?.focus());
+      }
+      // F1.4：把「这条会话住在快捷窗口里」登记到后端，主窗口才能定位到它的通知。
+      // 带上 projectPath/title：接管建 tab 时需要，而这条会话不进 savedSessions。
+      // 失败不阻断：登记的唯一作用是通知定位与接管，丢了不影响终端本身。
+      if (isQuick && sessionId) {
+        void reportQuickTerminalSession({
+          sessionId,
+          projectPath: tabData?.projectPath ?? "",
+          title: tabData?.title,
+        }).catch(console.error);
+      }
+    },
+    [isQuick, tabData?.projectPath, tabData?.title],
+  );
+
+  // F1.4：快捷终端里的 shell 退出后清登记，否则主窗口会继续把已死会话
+  // 当成「住在快捷窗口」，通知的「聚焦会话」点了只能唤出一个空窗口。
+  // 窗口被关闭/销毁的路径由后端清（lib.rs CloseRequested 与 destroy_quick_terminal），
+  // 这里只负责会话自己结束这一种。
+  const handleSessionExited = useCallback(() => {
+    if (!isQuick) return;
+    void reportQuickTerminalSession(null).catch(console.error);
   }, [isQuick]);
 
   // 快捷终端：窗口每次可见/获焦时聚焦终端（热键 toggle 唤出、点击窗口）。
@@ -153,6 +175,7 @@ export default function PopupTerminalWindow() {
         launchProfileId={tabData.launchProfileId}
         workspacePath={tabData.workspacePath}
         onSessionCreated={handleSessionCreated}
+        onSessionExited={handleSessionExited}
       />
     </div>
   );

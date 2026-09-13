@@ -29,6 +29,7 @@ import { useTrayActions } from "@/hooks/useTrayActions";
 import { useShortcutRegistrations } from "@/hooks/useShortcutRegistrations";
 import { useOpenTerminal } from "@/hooks/useOpenTerminal";
 import { useQuickCommandsSync } from "@/hooks/useQuickCommandsSync";
+import { useQuickTerminalSessionSync } from "@/hooks/useQuickTerminalSessionSync";
 import { usePipeEventListener } from "@/hooks/usePipeEventListener";
 import LauncherDialog from "@/components/launcher/LauncherDialog";
 import { useDensityStore } from "@/stores/useDensityStore";
@@ -117,6 +118,9 @@ function MainApp() {
   useQuickCommandsSync();
   // 系统托盘事件分发（tray-action / 通知偏好变更），独立于上面的生命周期序列。
   useTrayActions();
+  // 镜像「哪条会话住在快捷终端窗口里」（F1.4）：通知定位回退与「在主窗口打开」都靠它。
+  // 独立订阅，不参与上面的生命周期顺序，放这里避免打乱那条序列。
+  useQuickTerminalSessionSync();
   const handleOpenTerminal = useOpenTerminal();
 
   if (!terminalRestoreReady) return null;

@@ -82,6 +82,14 @@
     "expand": "Show more",
     "collapse": "Collapse",
     "paneLocation": "pane #{{index}}",
+    "quickTerminalLocation": "Quick terminal window",
+    "adoptToMainWindow": "Open in main window",
+    "adoptFromQuickTerminal": {
+      "ok": "Opened in main window",
+      "not-found": "This session is no longer in the quick terminal",
+      "claim-failed": "Cannot take over this session (in use by another window)",
+      "adopt-failed": "Failed to open this session in the main window"
+    },
     "timeJustNow": "just now",
     "timeMinutesAgo": "{{count}}m ago",
     "timeHoursAgo": "{{count}}h ago",

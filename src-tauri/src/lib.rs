@@ -107,6 +107,7 @@ use commands::{
     delete_workspace_skill,
     delete_workspace_snapshot,
     describe_skill_market_entry,
+    destroy_quick_terminal,
     detect_claude_session,
     detect_resume_session,
     detect_system_provider,
@@ -186,6 +187,7 @@ use commands::{
     get_project,
     get_project_cli_hooks,
     get_provider,
+    get_quick_terminal_session,
     get_recent_changes,
     get_recent_journal,
     get_resource_stats,
@@ -437,6 +439,7 @@ use commands::{
     set_layout_notification_sound,
     set_notification_snooze,
     set_project_cli_hook_enabled,
+    set_quick_terminal_session,
     set_web_access_password,
     set_workspace_archived,
     set_workspace_project_archived,
@@ -1800,6 +1803,9 @@ pub fn run() {
 
     let popup_data_store = commands::PopupDataStore::default();
     let layout_switcher_snapshot_store = commands::LayoutSwitcherSnapshotStore::default();
+    // F1.4：快捷终端当前会话 id（docs/105）。快捷终端的 tab 不在任何布局里，
+    // 主窗口靠这条登记把它接进通知定位与「在主窗口打开」接管。
+    let quick_terminal_session_store = commands::QuickTerminalSessionStore::default();
     let orchestrator_service = Arc::new(OrchestratorService::new(app_paths.as_ref()));
     // 登记簿按工作空间分目录，每个工作空间一个实例；MCP cursor_bridge 与 resume_binding
     // 都经同一个 hub 取实例，才能共用一把锁
@@ -1936,6 +1942,7 @@ pub fn run() {
         .manage(drama_service)
         .manage(popup_data_store)
         .manage(layout_switcher_snapshot_store)
+        .manage(quick_terminal_session_store)
         .manage(orchestrator_service.clone())
         .manage(cursor_bridge_hub)
         .manage(wallpaper_service)
@@ -2854,6 +2861,11 @@ pub fn run() {
                         // 弹出窗口关闭 → 通知主窗口回收标签（不阻止关闭）
                         let label = window.label().to_string();
                         let _ = window.app_handle().emit("popup-window-closing", &label);
+                        // 快捷终端窗口关掉后「哪条会话住在快捷窗口里」这条映射就失效了
+                        // （PTY 本身仍活着）。不清会让主窗口把会话定位到一个已不存在的窗口。
+                        if label == commands::QUICK_TERMINAL_LABEL {
+                            commands::clear_quick_terminal_session(window.app_handle());
+                        }
                     }
                 }
                 #[cfg(target_os = "macos")]
@@ -2974,6 +2986,9 @@ pub fn run() {
             toggle_quick_terminal,
             hide_quick_terminal,
             quick_terminal_update_shortcut,
+            set_quick_terminal_session,
+            get_quick_terminal_session,
+            destroy_quick_terminal,
             open_layout_switcher_window,
             close_layout_switcher_window,
             get_layout_switcher_snapshot,
