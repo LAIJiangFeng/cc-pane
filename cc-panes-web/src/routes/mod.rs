@@ -199,6 +199,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/git/repo-info", get(git::get_git_repo_info))
         .route("/api/git/status", get(git::get_git_status))
         .route("/api/git/file-statuses", get(git::get_git_file_statuses))
+        .route("/api/git/ignored-paths", get(git::get_git_ignored_paths))
         .route("/api/git/log", get(git::get_git_log))
         .route("/api/git/branches", get(git::get_git_local_branches))
         .route("/api/git/changed-files", get(git::get_git_changed_files))

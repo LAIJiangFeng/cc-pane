@@ -138,6 +138,43 @@ fn revision_and_path_guards_reject_option_and_traversal_injection() {
 }
 
 #[test]
+fn ignored_paths_cover_gitignored_files_and_directories() {
+    let (_guard, repo) = init_repo();
+    std::fs::write(repo.join(".gitignore"), b"build/\nsecret.env\n").unwrap();
+    std::fs::create_dir(repo.join("build")).unwrap();
+    std::fs::write(repo.join("build/out.js"), b"ignored\n").unwrap();
+    std::fs::write(repo.join("secret.env"), b"KEY=1\n").unwrap();
+    std::fs::write(repo.join("tracked.txt"), b"changed\n").unwrap();
+
+    let ignored = GitService::new().get_ignored_paths_compat(&repo).unwrap();
+
+    // 路径由 git 长形式 repo_root 拼出，CI %TEMP% 可能是 8.3 短路径，故按相对后缀匹配。
+    let has_suffix = |suffix: &str| {
+        ignored
+            .iter()
+            .any(|p| p.replace('\\', "/").ends_with(suffix))
+    };
+    // 被忽略目录整体上报一次（--ignored=matching 不递归展开），文件单独上报。
+    assert!(has_suffix("/build"), "ignored dir reported: {ignored:?}");
+    assert!(
+        has_suffix("/secret.env"),
+        "ignored file reported: {ignored:?}"
+    );
+    // 目录内部文件不被展开，已跟踪/已修改文件不在忽略集中。
+    assert!(!has_suffix("/build/out.js"));
+    assert!(!has_suffix("/tracked.txt"));
+}
+
+#[test]
+fn ignored_paths_empty_for_non_repository() {
+    let temp = tempfile::tempdir().unwrap();
+    let ignored = GitService::new()
+        .get_ignored_paths_compat(temp.path())
+        .unwrap();
+    assert!(ignored.is_empty());
+}
+
+#[test]
 fn blob_read_checks_size_before_loading_content() {
     let (_guard, repo) = init_repo();
     let service = GitService::new();

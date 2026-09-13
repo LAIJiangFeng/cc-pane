@@ -86,6 +86,13 @@ export const filesystemService = {
     );
   },
 
+  /** 获取被 .gitignore 忽略的路径（用于文件树斜体区分） */
+  getGitIgnoredPaths(rootPath: string): Promise<string[]> {
+    return invokeOrApi<string[]>("get_git_ignored_paths", { path: rootPath }, () =>
+      apiGet<string[]>("/api/git/ignored-paths", { path: rootPath }),
+    );
+  },
+
   searchProjectFiles(root: string, query: string, limit = 200): Promise<ProjectFileSearchResult> {
     return invokeOrApi<ProjectFileSearchResult>(
       "search_project_files",

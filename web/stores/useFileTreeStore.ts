@@ -12,6 +12,8 @@ interface FileTreeState {
   selectedFilePath: string | null;
   /** rootPath → (filePath → git status) */
   gitStatuses: Record<string, Record<string, string>>;
+  /** rootPath → 被 .gitignore 忽略的路径列表（文件树斜体区分） */
+  ignoredPaths: Record<string, string[]>;
 
   /** 加载目录（首次加载或刷新） */
   loadDirectory: (rootPath: string, dirPath: string) => Promise<void>;
@@ -31,6 +33,8 @@ interface FileTreeState {
   collapseAll: (rootPath: string) => void;
   /** 加载 Git 文件状态 */
   loadGitStatuses: (rootPath: string) => Promise<void>;
+  /** 加载 Git 忽略路径（.gitignore） */
+  loadGitIgnoredPaths: (rootPath: string) => Promise<void>;
 
   // CRUD 操作后自动刷新父目录
   createFile: (parentDir: string, name: string, rootPath: string) => Promise<void>;
@@ -72,6 +76,7 @@ export const useFileTreeStore = create<FileTreeState>()(
     showHidden: false,
     selectedFilePath: null,
     gitStatuses: {},
+    ignoredPaths: {},
 
     loadDirectory: async (rootPath, dirPath) => {
       // 标记 loading
@@ -191,6 +196,7 @@ export const useFileTreeStore = create<FileTreeState>()(
       set((state) => {
         delete state.trees[rootPath];
         delete state.gitStatuses[rootPath];
+        delete state.ignoredPaths[rootPath];
       });
     },
 
@@ -270,6 +276,20 @@ export const useFileTreeStore = create<FileTreeState>()(
         // 非 git 仓库或其他错误 → 置空
         set((state) => {
           state.gitStatuses[rootPath] = {};
+        });
+      }
+    },
+
+    loadGitIgnoredPaths: async (rootPath) => {
+      try {
+        const ignored = await filesystemService.getGitIgnoredPaths(rootPath);
+        set((state) => {
+          state.ignoredPaths[rootPath] = ignored;
+        });
+      } catch {
+        // 非 git 仓库或其他错误 → 置空
+        set((state) => {
+          state.ignoredPaths[rootPath] = [];
         });
       }
     },

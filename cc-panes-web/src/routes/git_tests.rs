@@ -312,6 +312,25 @@ async fn git_read_routes_match_tauri_git_commands() {
     .expect("changed files");
     assert_eq!(changed.len(), 2);
 
+    // 忽略项走独立通道：新增 .gitignore 忽略一个新文件，验证 web 路由与 tauri 命令同源。
+    // 用全新文件，避免影响上面已捕获的 changed/statuses 计数。
+    std::fs::write(repo.join(".gitignore"), "build.log\n").expect("write gitignore");
+    std::fs::write(repo.join("build.log"), "ignored\n").expect("write ignored file");
+    let Json(ignored) = get_git_ignored_paths(Query(PathQuery {
+        path: repo.to_string_lossy().to_string(),
+    }))
+    .await
+    .expect("ignored paths");
+    assert!(
+        ignored.iter().any(|path| {
+            std::path::Path::new(path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                == Some("build.log")
+        }),
+        "ignored paths must include build.log: {ignored:?}"
+    );
+
     let Json(diff) = get_git_diff(Json(GitDiffRequest {
         path: repo.to_string_lossy().to_string(),
         spec: cc_panes_core::models::GitDiffSpec::WorktreeVsHead {

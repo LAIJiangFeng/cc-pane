@@ -292,6 +292,7 @@
   "noOpenFiles": "没有打开的文件",
   "openFileHint": "在文件浏览器中点击文件以打开",
   "filetree.treeLabel": "项目文件树",
+  "filetree.ignored": "已被 Git 忽略",
   "filetree.openInEditor": "在编辑器中打开",
   "filetree.newFile": "新建文件",
   "filetree.newFolder": "新建文件夹",

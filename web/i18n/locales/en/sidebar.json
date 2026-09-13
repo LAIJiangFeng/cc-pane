@@ -292,6 +292,7 @@
   "noOpenFiles": "No open files",
   "openFileHint": "Click a file in the explorer to open it",
   "filetree.treeLabel": "Project file tree",
+  "filetree.ignored": "Ignored by Git",
   "filetree.openInEditor": "Open in Editor",
   "filetree.newFile": "New File",
   "filetree.newFolder": "New Folder",

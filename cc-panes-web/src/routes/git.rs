@@ -208,6 +208,13 @@ fn get_git_file_statuses_inner(path: &str) -> AppResult<HashMap<String, String>>
         .map_err(Into::into)
 }
 
+fn get_git_ignored_paths_inner(path: &str) -> AppResult<Vec<String>> {
+    validate_path(path)?;
+    GitService::new()
+        .get_ignored_paths_compat(Path::new(path))
+        .map_err(Into::into)
+}
+
 pub async fn get_git_repo_info(
     Query(query): Query<PathQuery>,
 ) -> Result<Json<GitRepoInfo>, (StatusCode, String)> {
@@ -240,6 +247,15 @@ pub async fn get_git_file_statuses(
 ) -> Result<Json<HashMap<String, String>>, (StatusCode, String)> {
     let path = query.path;
     spawn_git(move || get_git_file_statuses_inner(&path))
+        .await
+        .map(Json)
+}
+
+pub async fn get_git_ignored_paths(
+    Query(query): Query<PathQuery>,
+) -> Result<Json<Vec<String>>, (StatusCode, String)> {
+    let path = query.path;
+    spawn_git(move || get_git_ignored_paths_inner(&path))
         .await
         .map(Json)
 }

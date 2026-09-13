@@ -391,6 +391,18 @@ pub async fn get_git_file_statuses(path: String) -> AppResult<HashMap<String, St
     .await
 }
 
+/// 获取被 .gitignore 忽略的路径（绝对路径字符串列表），用于文件树斜体区分。
+#[tauri::command]
+pub async fn get_git_ignored_paths(path: String) -> AppResult<Vec<String>> {
+    validate_path(&path)?;
+    spawn_git_task(move || {
+        GitService::new()
+            .get_ignored_paths_compat(Path::new(&path))
+            .map_err(AppError::from)
+    })
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -512,6 +524,29 @@ mod tests {
         assert_eq!(status_of("tracked.txt"), Some("modified"));
         assert_eq!(status_of("untracked.txt"), Some("untracked"));
         assert_eq!(status_of("staged.txt"), Some("added"));
+    }
+
+    #[tokio::test]
+    async fn get_git_ignored_paths_returns_gitignored_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        git(root, &["init", "-q"]);
+        git(root, &["config", "user.email", "test@example.com"]);
+        git(root, &["config", "user.name", "test"]);
+
+        std::fs::write(root.join(".gitignore"), "ignored.log\n").unwrap();
+        std::fs::write(root.join("ignored.log"), "x").unwrap();
+        std::fs::write(root.join("kept.txt"), "y").unwrap();
+
+        let ignored = get_git_ignored_paths(root.to_string_lossy().to_string())
+            .await
+            .unwrap();
+        let names: Vec<_> = ignored
+            .iter()
+            .filter_map(|p| Path::new(p).file_name().and_then(|n| n.to_str()))
+            .collect();
+        assert!(names.contains(&"ignored.log"), "names = {names:?}");
+        assert!(!names.contains(&"kept.txt"), "names = {names:?}");
     }
 
     #[tokio::test]
