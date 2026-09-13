@@ -5,6 +5,7 @@ import type { Terminal, IDisposable } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 import type { SerializeAddon } from "@xterm/addon-serialize";
 import type { TFunction } from "i18next";
+import { toast } from "sonner";
 import { terminalService } from "@/services";
 import { isTauriRuntime } from "@/services/runtime";
 import { noteTerminalGeometry } from "@/utils/terminalCast";
@@ -45,6 +46,7 @@ import { registerTerminalParserHandlers } from "./terminalParserHandlers";
 import { createTerminalPasteHandlers } from "./terminalPaste";
 import { attachTerminalTextareaIntegration } from "./terminalTextareaIntegration";
 import { attachTerminalDragDropListener } from "./terminalDragDrop";
+import type { TerminalRuntimeKind } from "../terminalDropPaths";
 import { createTerminalCustomKeyHandler } from "./terminalCustomKeyHandler";
 import { createTerminalOnDataHandler } from "./terminalOnDataHandler";
 import { createTerminalResizeObserver } from "./terminalResizeObserver";
@@ -401,11 +403,22 @@ export function useTerminalInstanceInit({
         imeGuardRef,
       });
 
+      const dropRuntimeKind: TerminalRuntimeKind = props.ssh
+        ? "ssh"
+        : props.wsl
+          ? "wsl"
+          : "local";
       attachTerminalDragDropListener({
         getHost: () => terminalRef.current,
         isMounted: () => isMounted,
         debugLog,
         pasteText: pasteTextIntoTerminal,
+        getRuntimeKind: () => dropRuntimeKind,
+        onUnsupportedDrop: (pathCount) => {
+          toast.info(t("sshLocalDropUnsupported"), {
+            description: t("sshLocalDropUnsupportedHint", { pathCount }),
+          });
+        },
         setUnlisten: (unlisten) => {
           dragDropUnlistenRef.current = unlisten;
         },

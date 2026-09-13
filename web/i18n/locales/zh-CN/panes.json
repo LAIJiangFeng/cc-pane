@@ -1,5 +1,7 @@
 {
   "ready": "准备就绪",
+  "sshLocalDropUnsupported": "本地文件无法拖入 SSH 终端",
+  "sshLocalDropUnsupportedHint": "拖入的 {{pathCount}} 个路径在本机上，远端主机无法访问。请先通过远程文件上传。",
   "selectProject": "从左侧选择一个项目以启动终端",
   "startingTerminal": "正在启动终端",
   "startingTerminalHint": "请稍候，正在准备终端会话...",

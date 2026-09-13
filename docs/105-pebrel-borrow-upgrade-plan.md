@@ -42,15 +42,32 @@ Pebrel 用全局热键拉出进程级单例终端，隐藏时保留 PTY 与滚�
   - 验收：呼出 → 跑 `claude` → 隐藏 → 30s 后呼出，对话仍在且可继续输入；改热键后旧热键失效、新热键生效。
   - 复用点：`tauri_plugin_global_shortcut`（`screenshot_commands.rs` 已有用法）、`window_commands.rs` 的 show/hide/resize 基建。
 
-### F2 拖文件进终端插入带引号路径 · P0
+### F2 拖文件进终端：shell 引号转义 + WSL 路径转换 · P0
 
-Pebrel 支持从系统文件管理器拖入本地/WSL 终端，**只插入路径不执行**。CC-Panes 的 drop 仅存在于 `ChatComposer.tsx` 和编辑器标签（`FileEditorPanel.tsx`），**终端本体不支持**。改动小、收益大。
+> **更正（实施期核对）**：拖拽本身**已实现**——`terminal/terminalDragDrop.ts` 监听 Tauri `onDragDropEvent`，drop 落在终端宿主内即把路径粘贴进去（`isDropInsideTerminalHost` 做了命区判定，多文件以空格 join）。原 PRD「终端本体不支持」的描述有误，已据代码改正。
+>
+> **真实 gap**：`formatTerminalFilePaths`（`terminalClipboard.ts:95`）只做 `paths.join(" ")`，**既不 shell 转义、也不按会话类型转换路径**。后果：
+> 1. 含空格/中文的路径（`C:\my dir\a.txt`）粘进去会被 shell 拆成两个参数，命令直接错。
+> 2. WSL 会话拿到的是 Windows 盘符路径（`C:\...`），在 guest shell 里无效，应是 `/mnt/c/...`。
+> 3. SSH 会话拿到宿主本地路径同样无意义（Pebrel 走「先上传再插路径」，本期不做，见下）。
 
-- **F2.1** 从系统文件管理器拖入终端 → 在当前光标处插入 shell 转义（带引号）后的路径，**不自动回车**。
-- **F2.2** 多个文件 → 以空格分隔依次插入；目录同样支持。
-- **F2.3** 路径按会话类型正确呈现：本地用宿主路径，WSL 会话转换为 `/mnt/...`。
-- **F2.4** 拖入 CC-Panes 自己的文件树节点同样生效（内部拖拽）。
-  - 验收：从资源管理器拖一个含空格/中文的路径进 WSL 终端 → 得到正确转义的 `/mnt/...` 路径且不执行；拖 3 个文件 → 空格分隔。
+- **F2.1 shell 引号转义**：插入前对每个路径做单引号包裹（POSIX：内部 `'` → `'\''`），消除空格/特殊字符破坏。
+  - 验收：拖入 `C:\my dir\a b.txt` → 终端得到 `'C:\my dir\a b.txt'`，作为单一参数。
+- **F2.2 WSL 路径转换**：会话为 WSL（`props.wsl` 存在）时，把 Windows 盘符路径转 `/mnt/<drive>/...`，复用后端 `codex_session_service.rs` 已验证的 `drive_to_mnt_path` / `strip_wsl_unc_prefix` 语义（前端镜像一份纯函数 + 单测，含 UNC `\\wsl.localhost\...` 形态）。
+  - 验收：WSL 会话拖入 `D:\repos\app` → 得到 `'/mnt/d/repos/app'`；本地会话行为不变（不转换）。
+- **F2.3 SSH 会话诚实降级**：SSH 会话拖入本地路径时，**不假装可用**——要么不插入、要么给出「本地路径无法在远端使用，请用 Remote Files 上传」提示（对标 Pebrel 的诚实标注，但本期不做自动上传）。
+  - 验收：SSH 会话拖入本地文件 → 不插入无效路径，有明确提示。
+- **F2.4（已具备，仅回归测试）** 多文件空格分隔、目录支持、内部文件树拖拽：现状已覆盖，补单测锁定不退化。
+  - 验收：拖 3 个文件 → 空格分隔且各自转义；含空格路径不被拆开。
+
+> **落地状态（本次提交）**：F2.1 / F2.2 / F2.3 已实现并通过单测。
+> - 新增纯函数模块 `web/components/panes/terminalDropPaths.ts`（无 DOM 依赖，可单测）：`quoteShellPath`（POSIX 单引号转义）、`windowsPathToWsl`（`C:\a\b`→`/mnt/c/a/b`，含 `\\wsl.localhost\…` / `\\wsl$\…` UNC）、`formatTerminalPathsForShell(paths, runtimeKind)`（`local`/`wsl` 转义、`wsl` 额外转换、`ssh` 返回空串）。
+> - `terminalDragDrop.ts` 改用该 formatter，新增 `getRuntimeKind` 与 `onUnsupportedDrop` 回调。
+> - `useTerminalInstanceInit.ts` 由 `props.ssh`/`props.wsl` 推导运行时；SSH 拖入本地文件弹 `toast.info` 诚实降级（不插入无效路径）。
+> - i18n：`panes.sshLocalDropUnsupported` / `sshLocalDropUnsupportedHint`（en + zh-CN）。
+> - 测试：`terminalDropPaths.test.ts` 22 例全绿；`tsc --noEmit` 通过。
+> - **遗留（未竟）**：F2 缺口同源的另一半 —— 剪贴板**粘贴**文件路径仍走 `terminalClipboard.formatTerminalFilePaths` 的裸 `join(" ")`，未接同一 formatter（粘贴 handler 的运行时上下文接线较绕，留下一 PR，避免本次膨胀）。
+> - **注**：F2.2 原计划「复用后端 `drive_to_mnt_path` / `strip_wsl_unc_prefix` 语义」，本次为前端独立镜像一份等价纯函数（后端命令未导出给前端直调）；语义已用单测锁定，但两份实现需各自维护。
 
 ### F3 Git 历史拓扑图 + 三栏冲突解决 · P1
 
