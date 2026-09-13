@@ -43,6 +43,19 @@ describe("buildImageAddonOptions", () => {
     expect(options.pixelLimit!).toBeLessThan(16_777_216);
     expect(options.showPlaceholder).toBe(true);
   });
+
+  // 单位契约守卫：addon-image 的 storageLimit 以「MB」为单位，构造时校验
+  // 0.5 <= storageLimit <= 1000；越界会被真实 addon `console.error` 后静默回落
+  // 到 10MB（已在 headless Chrome + 真实 addon-image@0.9.0 实测复现）。若误把
+  // 字节数（如 32*1024*1024）传进来，此断言会失败，避免该回归重新混入。
+  it("storageLimit 取 MB 量级并落在 addon 校验区间 [0.5, 1000] 内", () => {
+    const { storageLimit } = buildImageAddonOptions();
+    expect(typeof storageLimit).toBe("number");
+    expect(storageLimit!).toBeGreaterThanOrEqual(0.5);
+    expect(storageLimit!).toBeLessThanOrEqual(1000);
+    // 反例：字节量级（MB * 1024 * 1024）必然越界，证明区间断言确有约束力。
+    expect(TERMINAL_IMAGE_STORAGE_LIMIT_MB * 1024 * 1024).toBeGreaterThan(1000);
+  });
 });
 
 describe("attachTerminalImageAddon", () => {

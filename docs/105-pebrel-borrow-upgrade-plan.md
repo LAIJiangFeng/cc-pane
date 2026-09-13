@@ -144,11 +144,17 @@ Pebrel 的 ROADMAP 有三道可重复闸门，这是**最值得学**的部分。
   > - `useTerminalInstanceInit.ts` 在渲染器装配后**门控 fire-and-forget** 调用（`settings.terminal.inlineImagesEnabled` 为真才触发）；addon 经 `term.loadAddon()` 注册，随 `disposeTerminalView` 的 `term.dispose()` 一并销毁，无需另起 ref。
   > - 设置 UI：`TerminalSection` 新增 `terminal-inline-images` 开关（i18n en/zh-CN 标签+提示+搜索关键词），`settingsRegistry` 登记可搜索项。
   > - **构建分包修复**：`vite.config.ts` 的 `manualChunks` 原本把 `node_modules/@xterm/*` 一律卷进 `"xterm"` chunk，会让 addon-image **随每次终端打开静态加载**，使「默认关闭」形同虚设。在通配规则**之前**插入 `@xterm/addon-image → "terminal-image-addon"` 专属规则，把它拆成只可经动态 import 到达的独立 chunk。验证：拆出后 `terminal-image-addon-*.js` 独立存在、`index.html` 不 modulepreload 它、首屏 gzip 仍 **848.1 kB**（与加 addon 前一致）、`check:bundle` 通过、`verify-xterm-build` 通过。
-  > - 测试：`terminalImageAddon.test.ts` 5 例（保守上限钉住 addon 默认之下、挂载中正常附着、取回期间已卸载不附着、附着抛错吞掉记日志、模块级缓存）；`lazyBoundaries.test.ts` 新增 2 例（addon-image 懒边界唯一入口 + vite manualChunks 规则顺序守护，防回归再被卷进 xterm chunk）；`settingsRegistry.test.ts` / `TerminalSection.test.tsx` 各 +1（搜索项登记 / 开关从默认关闭态可切到开启）。
-  > - 验证结果：`cargo fmt` / `clippy -p cc-panes-core --all-targets -D warnings` 干净、`cargo test -p cc-panes-core settings::` 55 通过；`tsc --noEmit` 干净；全套前端 **5489** 测试通过（+9，与 F7.3 的 5480 对比）；`lineRatchet` / `noRawText` 绿（`useTerminalInstanceInit.ts` 492 行，未越 500 红线）。
+  > - 测试：`terminalImageAddon.test.ts` 6 例（保守上限钉住 addon 默认之下、**`storageLimit` 单位 MB 守卫**——断言其落在 addon 真实校验区间 `[0.5, 1000]`，防「误传字节数」回归、挂载中正常附着、取回期间已卸载不附着、附着抛错吞掉记日志、模块级缓存）；`lazyBoundaries.test.ts` 新增 2 例（addon-image 懒边界唯一入口 + vite manualChunks 规则顺序守护，防回归再被卷进 xterm chunk）；`settingsRegistry.test.ts` / `TerminalSection.test.tsx` 各 +1（搜索项登记 / 开关从默认关闭态可切到开启）。
+  > - 验证结果：`cargo fmt` / `clippy -p cc-panes-core --all-targets -D warnings` 干净、`cargo test -p cc-panes-core settings::` 55 通过；`tsc --noEmit` 干净；全套前端 **5490** 测试通过（+10，与 F7.3 的 5480 对比；本轮新增 `storageLimit` 单位 MB 守卫）；`lineRatchet` / `noRawText` 绿（`useTerminalInstanceInit.ts` 492 行，未越 500 红线）。
   > - **降级与平台边界（诚实声明）**：
   >   - 图片**不会随休眠（SerializeAddon VT 重放）恢复**——属可接受降级，已在 i18n 提示与代码注释写明。
-  >   - addon-image 用独立 overlay canvas，理论上不扰动 WebGL/DOM 渲染器回退，但**实际内联图片渲染效果属 Windows-host-required**：本环境（WSL/CI）仅验证了开关默认关闭、懒加载边界、内存限额、分包、生命周期与错误吞噬等逻辑层；真机出图、与 WebGL/DOM 路径的视觉兼容性、多图滚动表现需在 Windows host 上确认。
+  >   - addon-image 用独立 overlay canvas（`canvas.xterm-image-layer`），不扰动 WebGL/DOM 渲染器本体。
+  >   - **真实引擎验收（已闭环）**：单测全部 mock 掉 `@xterm/addon-image`，只证接线/选项/生命周期，证不了「真 addon + 真 xterm6 是否真出图」。故另起一次性 headless-Chrome(153) 验收脚本：esbuild 打包**真实** `@xterm/xterm@6.0.0` + **真实** `@xterm/addon-image@0.9.0`，并 `import` 生产 `buildImageAddonOptions()`（杜绝手抄偏差），写入真实协议字节后读取 overlay canvas 像素：
+  >     - **OSC 1337（iTerm IIP）**：写 8×8 纯红 PNG → 观测到 `canvas.xterm-image-layer`，采样像素 `[220,20,20,255]`（与编码的红色逐字节一致），`storageImages=1`、`storageUsage=0.000256MB`（=8×8×4B）。
+  >     - **SIXEL**：写 12×6 纯绿 DCS-q 块 → 采样像素 `[0,255,0,255]`（纯绿一致），WASM 解码器实跑（`decMode=1/decLevel=1`、`decWidth=12/decHeight=6`、`handlerSize=26`）、`storageUsage=0.000288MB`（=12×6×4B）。
+  >     - 生产 `buildImageAddonOptions()` 在真 addon 校验下**零 console 报错/告警**（`storageLimit=32` 落在合法 MB 区间）。
+  >     - 验收中实测复现两类「mock 测不出」的真实坑并据此加固：①`storageLimit` 单位是 **MB 非字节**，误传字节会被真 addon `console.error` 后**静默回落 10MB**——已加单测守卫钉住单位契约；②SIXEL 解码器是**异步**创建（`DecoderAsync→WASM`），就绪前写入会被静默丢弃——属上游行为，真实 PTY 场景由持续输入自然覆盖，已在脚本注释记录。
+  >   - **残留平台边界（诚实声明）**：上述证明的是 Chromium 引擎下「真 addon 对真 xterm6 真实出图」。仍属 **Windows-host-required** 的是 Tauri **WebView2** 宿主下的最终视觉合成、与本仓库 WebGL 透明/花屏已知坑（CLAUDE.md）在同屏多窗格时的叠加表现、以及多图滚动/休眠恢复的真机观感——这些需 Windows host 实跑确认，本环境不声称已验证。
   >   - 因 addon 仍为 beta，默认关闭是有意保守选择；如上游成熟或出现稳定替代，可重评是否转默认开启。
 
 ## 4. 非功能需求
