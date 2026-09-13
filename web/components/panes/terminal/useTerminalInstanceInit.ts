@@ -46,6 +46,7 @@ import { attachTerminalInputIntegration } from "./terminalInputIntegration";
 import { createTerminalOnDataHandler } from "./terminalOnDataHandler";
 import { createTerminalResizeObserver } from "./terminalResizeObserver";
 import { launchOrAttachTerminalSession } from "./terminalSessionLaunch";
+import { MINIMUM_TERMINAL_CONTRAST_RATIO } from "../terminalContrast";
 import type { TerminalViewProps } from "./terminalViewTypes";
 
 const IS_WINDOWS = typeof navigator !== "undefined" && navigator.platform.startsWith("Win");
@@ -286,7 +287,10 @@ export function useTerminalInstanceInit({
         cursorStyle,
         fastScrollSensitivity: 5,
         fontSize,
-        minimumContrastRatio: 4.5,
+        // F7.1：xterm 按背景动态把跌破阈值的文字色推离背景，达标颜色保持原样——
+        // 浅色主题下大量 ANSI 色（亮黄/亮青/亮白等）本就不可读，全靠此项兜底。
+        // 阈值真源在 terminalContrast.ts，配套审计单测防止被调低或误删。
+        minimumContrastRatio: MINIMUM_TERMINAL_CONTRAST_RATIO,
         rescaleOverlappingGlyphs: true,
         smoothScrollDuration: 0,
         scrollback,

@@ -22,6 +22,7 @@ import { TERMINAL_FIT_ALL_EVENT } from "./terminalFitEvents";
 import { terminalRestoreLaunchQueue } from "./terminalRestoreQueue";
 import TerminalView from "./TerminalView";
 import { attachTerminalImeGuard } from "./terminalImeGuard";
+import { MINIMUM_TERMINAL_CONTRAST_RATIO } from "./terminalContrast";
 
 /* ------------------------------------------------------------------ */
 /* xterm mock                                                          */
@@ -1304,8 +1305,9 @@ describe("TerminalView", () => {
   it("keeps terminal text readable on contrasting TUI backgrounds", async () => {
     renderTerminalView();
 
+    // F7.1：阈值取自共享常量，避免测试与实现各写一遍 4.5 而静默漂移。
     const term = await lastTerm();
-    expect(term.options.minimumContrastRatio).toBe(4.5);
+    expect(term.options.minimumContrastRatio).toBe(MINIMUM_TERMINAL_CONTRAST_RATIO);
   });
 
   it("applies scrollback changes to a live terminal at runtime (clamped)", async () => {
