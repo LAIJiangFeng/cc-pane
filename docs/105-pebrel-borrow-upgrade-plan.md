@@ -119,6 +119,13 @@ Pebrel 的 ROADMAP 有三道可重复闸门，这是**最值得学**的部分。
 ### F7 小体验项（打包做） · P2
 
 - **F7.1** 浅色背景下终端文字自动对比度增强（保留本就可读的配色）。
+  > **更正（实施期核对）**：该行为**已具备**——`useTerminalInstanceInit.ts` 的 xterm 构造自 `8c7a827f` 起就无条件设 `minimumContrastRatio`，xterm 渲染时按背景动态把**跌破阈值**的前景色推离背景、达标色原样保留，正是本条需求语义。实测量化（WCAG 2.x，对各自背景）：`LIGHT_TERMINAL_THEME`（`#ffffff`）17 个 ANSI 文字色里 **12 个**低于 4.5（`brightWhite` 1.19 / `brightYellow` 1.27 / `brightCyan` 1.42 / `brightGreen` 1.67 / `yellow` 2.34 / `cyan` 2.34 / `green` 2.46 …），`DARK_TERMINAL_THEME` 仅 2 个（`black` 1.00 / `brightBlack` 3.47）。即该选项在浅色主题下是**承重**而非装饰，PRD「需新增」的描述有误，已据代码与实测改正。
+  >
+  > **真实 gap（本次提交 af5b2757）**：这份保证此前是**无人看守的裸字面量 4.5**，且在测试里重复硬编码一份，被调低或误删都不会有任何信号。故不重建既有行为，而是把它固化为可审计、可回归的契约：
+  > - 新增纯模块 `web/components/panes/terminalContrast.ts`：`MINIMUM_TERMINAL_CONTRAST_RATIO` 为**唯一真源**（终端构造与测试共用）；`parseHexColor` / `relativeLuminance` / `contrastRatio`（WCAG 2.x 口径，与 `scripts/check-theme-contrast.mjs` 同算法但面向 ANSI 色表）；`auditTerminalPaletteContrast` 逐色度量并标出需 xterm 介入者。
+  > - `useTerminalInstanceInit.ts` 改读该常量并补语义注释；`TerminalView.test.tsx` 既有可读性断言改为引用共享常量，消除阈值双写。
+  > - 新增 `terminalContrast.test.ts` 14 例：WCAG 数学对齐已知参考值（黑白 21:1、同色 1:1、`#767676` 对白底恰在 4.5 档）、**浅色主题确有大量低对比色**（证明自动增强非空转）、**达标色不被标记**（锁定「保留本就可读的配色」）、阈值敏感性、壁纸 `rgba()` 背景不误判。
+  > - 无行为变化。`tsc` 干净；全套前端 **5470** 测试通过；`lineRatchet` 绿；`scripts/check-theme-contrast.mjs` 退出 0。
 - **F7.2** 文件树中 git-ignore 的文件/目录用斜体区分。
   > **落地状态（本次提交 cf9c3799）**：已实现并通过单测。新增独立「忽略路径」通道（不与现有 git 变更/状态模型混淆）：core `get_ignored_paths_compat`/`parse_ignored_paths_z`（`git status --porcelain=v1 -z --ignored=matching`，忽略目录整体上报一次、不递归展开）→ Tauri 命令 `get_git_ignored_paths`（已注册 lib.rs）→ web parity 路由 `GET /api/git/ignored-paths`。前端 `filesystemService.getGitIgnoredPaths` + `useFileTreeStore.ignoredPaths/loadGitIgnoredPaths` + `utils/gitIgnore`（`createGitIgnoreMatcher`，子节点继承祖先忽略态）；`FileTreeNode` 命中时斜体 + `data-ignored` + 「已被 Git 忽略」title，i18n en/zh-CN 已加。测试覆盖 core 单测+集成、Tauri 命令、web parity、gitIgnore 单测、FileTree 斜体/继承、store mock。
   > 顺带修复：F2 提交把 `useTerminalInstanceInit.ts` 撑过 500 行红线导致 `lineRatchet` 失败，按「拆分而非抬基线」策略把输入装配抽到 `terminalInputIntegration.ts`（ce8492d1），无行为变化，全套前端 5453 测试通过。
