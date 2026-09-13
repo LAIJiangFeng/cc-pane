@@ -66,7 +66,7 @@ Pebrel 用全局热键拉出进程级单例终端，隐藏时保留 PTY 与滚�
 > - `useTerminalInstanceInit.ts` 由 `props.ssh`/`props.wsl` 推导运行时；SSH 拖入本地文件弹 `toast.info` 诚实降级（不插入无效路径）。
 > - i18n：`panes.sshLocalDropUnsupported` / `sshLocalDropUnsupportedHint`（en + zh-CN）。
 > - 测试：`terminalDropPaths.test.ts` 22 例全绿；`tsc --noEmit` 通过。
-> - **遗留（未竟）**：F2 缺口同源的另一半 —— 剪贴板**粘贴**文件路径仍走 `terminalClipboard.formatTerminalFilePaths` 的裸 `join(" ")`，未接同一 formatter（粘贴 handler 的运行时上下文接线较绕，留下一 PR，避免本次膨胀）。
+> - **同源补齐（后续提交）**：剪贴板**粘贴**文件路径也已接同一 formatter —— `terminalPaste.ts` 对 `kind === "file"` 的负载用 `payload.filePaths` 经 `formatTerminalPathsForShell` 重新格式化（不再用裸 join 的 `payload.text`），SSH 同样诚实降级（`onUnsupportedPaths`）。拖放与粘贴共用 `useTerminalInstanceInit.ts` 里同一份运行时推导与提示回调。新增 `terminalPaste.test.ts` 5 例（local 转义 / wsl 转换 / ssh 降级 / 缺省 local / 文本透传）。`terminalClipboard.formatTerminalFilePaths` 保留为负载解析期的占位文本，不再是插入终端的最终来源。
 > - **注**：F2.2 原计划「复用后端 `drive_to_mnt_path` / `strip_wsl_unc_prefix` 语义」，本次为前端独立镜像一份等价纯函数（后端命令未导出给前端直调）；语义已用单测锁定，但两份实现需各自维护。
 
 ### F3 Git 历史拓扑图 + 三栏冲突解决 · P1

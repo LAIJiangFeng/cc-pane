@@ -379,10 +379,25 @@ export function useTerminalInstanceInit({
       });
       rendererControllerRef.current.configure(terminalRendererModeRef.current);
 
+      const dropRuntimeKind: TerminalRuntimeKind = props.ssh
+        ? "ssh"
+        : props.wsl
+          ? "wsl"
+          : "local";
+      // SSH 会话拿到宿主本地路径（拖放或粘贴文件）时，不插入无效路径，
+      // 给出诚实提示。拖放与粘贴共用同一文案与回调。
+      const notifyUnsupportedLocalPaths = (pathCount: number) => {
+        toast.info(t("sshLocalDropUnsupported"), {
+          description: t("sshLocalDropUnsupportedHint", { pathCount }),
+        });
+      };
+
       const { pasteTextIntoTerminal, pasteTerminalPayload } = createTerminalPasteHandlers({
         term,
         debugLog,
         lastShortcutPasteAtRef,
+        getRuntimeKind: () => dropRuntimeKind,
+        onUnsupportedPaths: notifyUnsupportedLocalPaths,
       });
 
       pasteRequestRef.current = () => pasteTerminalPayload(null);
@@ -403,22 +418,13 @@ export function useTerminalInstanceInit({
         imeGuardRef,
       });
 
-      const dropRuntimeKind: TerminalRuntimeKind = props.ssh
-        ? "ssh"
-        : props.wsl
-          ? "wsl"
-          : "local";
       attachTerminalDragDropListener({
         getHost: () => terminalRef.current,
         isMounted: () => isMounted,
         debugLog,
         pasteText: pasteTextIntoTerminal,
         getRuntimeKind: () => dropRuntimeKind,
-        onUnsupportedDrop: (pathCount) => {
-          toast.info(t("sshLocalDropUnsupported"), {
-            description: t("sshLocalDropUnsupportedHint", { pathCount }),
-          });
-        },
+        onUnsupportedDrop: notifyUnsupportedLocalPaths,
         setUnlisten: (unlisten) => {
           dragDropUnlistenRef.current = unlisten;
         },
