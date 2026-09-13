@@ -5,7 +5,6 @@ import type { Terminal, IDisposable } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 import type { SerializeAddon } from "@xterm/addon-serialize";
 import type { TFunction } from "i18next";
-import { toast } from "sonner";
 import { terminalService } from "@/services";
 import { isTauriRuntime } from "@/services/runtime";
 import { noteTerminalGeometry } from "@/utils/terminalCast";
@@ -43,11 +42,7 @@ import type { attachTerminalImeGuard } from "../terminalImeGuard";
 import type { CliTool, TerminalRendererMode } from "@/types";
 import type { RestoreLaunchState } from "../terminalRestoreQueue";
 import { registerTerminalParserHandlers } from "./terminalParserHandlers";
-import { createTerminalPasteHandlers } from "./terminalPaste";
-import { attachTerminalTextareaIntegration } from "./terminalTextareaIntegration";
-import { attachTerminalDragDropListener } from "./terminalDragDrop";
-import type { TerminalRuntimeKind } from "../terminalDropPaths";
-import { createTerminalCustomKeyHandler } from "./terminalCustomKeyHandler";
+import { attachTerminalInputIntegration } from "./terminalInputIntegration";
 import { createTerminalOnDataHandler } from "./terminalOnDataHandler";
 import { createTerminalResizeObserver } from "./terminalResizeObserver";
 import { launchOrAttachTerminalSession } from "./terminalSessionLaunch";
@@ -379,63 +374,29 @@ export function useTerminalInstanceInit({
       });
       rendererControllerRef.current.configure(terminalRendererModeRef.current);
 
-      const dropRuntimeKind: TerminalRuntimeKind = props.ssh
-        ? "ssh"
-        : props.wsl
-          ? "wsl"
-          : "local";
-      // SSH 会话拿到宿主本地路径（拖放或粘贴文件）时，不插入无效路径，
-      // 给出诚实提示。拖放与粘贴共用同一文案与回调。
-      const notifyUnsupportedLocalPaths = (pathCount: number) => {
-        toast.info(t("sshLocalDropUnsupported"), {
-          description: t("sshLocalDropUnsupportedHint", { pathCount }),
-        });
-      };
-
-      const { pasteTextIntoTerminal, pasteTerminalPayload } = createTerminalPasteHandlers({
+      // 输入装配（粘贴 / 文本域+原生菜单 / 拖放 / 自定义键）集中到独立模块，
+      // 共享 runtimeKind 与 SSH 宿主路径的诚实提示回调（F2）。
+      attachTerminalInputIntegration({
+        props,
+        t,
         term,
         debugLog,
-        lastShortcutPasteAtRef,
-        getRuntimeKind: () => dropRuntimeKind,
-        onUnsupportedPaths: notifyUnsupportedLocalPaths,
-      });
-
-      pasteRequestRef.current = () => pasteTerminalPayload(null);
-
-      nativeMenuCleanupRef.current = attachTerminalTextareaIntegration({
-        term,
-        host: terminalRef.current,
-        debugLog,
-        pasteTerminalPayload,
-        currentSessionIdRef,
-        readOnlyRef,
-        isDisconnectedRef,
-        inputTraceSeqRef,
+        getHost: () => terminalRef.current,
+        isMounted: () => isMounted,
         pasteHandlerRef,
+        pasteRequestRef,
+        nativeMenuCleanupRef,
         inputDebugCleanupRef,
+        inputTraceSeqRef,
+        lastShortcutPasteAtRef,
+        dragDropUnlistenRef,
         inputTraceRef,
         domInputFallbackRef,
         imeGuardRef,
+        currentSessionIdRef,
+        readOnlyRef,
+        isDisconnectedRef,
       });
-
-      attachTerminalDragDropListener({
-        getHost: () => terminalRef.current,
-        isMounted: () => isMounted,
-        debugLog,
-        pasteText: pasteTextIntoTerminal,
-        getRuntimeKind: () => dropRuntimeKind,
-        onUnsupportedDrop: notifyUnsupportedLocalPaths,
-        setUnlisten: (unlisten) => {
-          dragDropUnlistenRef.current = unlisten;
-        },
-      });
-
-      term.attachCustomKeyEventHandler(createTerminalCustomKeyHandler({
-        term,
-        getImeGuard: () => imeGuardRef.current,
-        debugLog,
-        pasteTerminalPayload,
-      }));
 
       // Fit once after the initial layout pass. Inactive/hidden tabs keep a
       // pending layout and flush it when they become visible.
