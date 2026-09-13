@@ -120,6 +120,8 @@ Pebrel 的 ROADMAP 有三道可重复闸门，这是**最值得学**的部分。
 
 - **F7.1** 浅色背景下终端文字自动对比度增强（保留本就可读的配色）。
 - **F7.2** 文件树中 git-ignore 的文件/目录用斜体区分。
+  > **落地状态（本次提交 cf9c3799）**：已实现并通过单测。新增独立「忽略路径」通道（不与现有 git 变更/状态模型混淆）：core `get_ignored_paths_compat`/`parse_ignored_paths_z`（`git status --porcelain=v1 -z --ignored=matching`，忽略目录整体上报一次、不递归展开）→ Tauri 命令 `get_git_ignored_paths`（已注册 lib.rs）→ web parity 路由 `GET /api/git/ignored-paths`。前端 `filesystemService.getGitIgnoredPaths` + `useFileTreeStore.ignoredPaths/loadGitIgnoredPaths` + `utils/gitIgnore`（`createGitIgnoreMatcher`，子节点继承祖先忽略态）；`FileTreeNode` 命中时斜体 + `data-ignored` + 「已被 Git 忽略」title，i18n en/zh-CN 已加。测试覆盖 core 单测+集成、Tauri 命令、web parity、gitIgnore 单测、FileTree 斜体/继承、store mock。
+  > 顺带修复：F2 提交把 `useTerminalInstanceInit.ts` 撑过 500 行红线导致 `lineRatchet` 失败，按「拆分而非抬基线」策略把输入装配抽到 `terminalInputIntegration.ts`（ce8492d1），无行为变化，全套前端 5453 测试通过。
 - **F7.3** 通知点击定位到源 pane，即使该 tab 已被移到别的窗口。
 - **F7.4** 终端内联图片（OSC 1337 / iTerm2 协议），接 `xterm-addon-image`，供 AI CLI 输出图表。
   - 验收：各自独立可验；F7.4 需确认与现有 WebGL/DOM 渲染路径不冲突（CLAUDE.md 已记录 WebGL 透明/花屏坑）。
