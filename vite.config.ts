@@ -40,6 +40,13 @@ export default defineConfig(async () => ({
           ) {
             return "monaco-editor";
           }
+          // @xterm/addon-image 必须独立成 chunk：它只经懒加载边界
+          // (terminalImageAddon.ts 的 import()) 动态引用，且按 settings.terminal
+          // .inlineImagesEnabled（默认 false）门控。若被下面那条 `@xterm/` 规则
+          // 卷进 xterm chunk，就会随每次终端打开一起加载——开关形同虚设，且把
+          // ~62KB beta 代码塞进核心终端包。放在通配规则之前拦截，确保它落进
+          // 只可动态到达的独立 chunk，不进首屏 modulepreload 图。
+          if (id.includes("node_modules/@xterm/addon-image")) return "terminal-image-addon";
           if (id.includes("node_modules/@xterm/")) return "xterm";
           // @radix-ui 不做独立分包：Radix 组件在模块求值期即调用 React.forwardRef，
           // 独立 chunk 会与入口（React 所在）形成循环依赖——radix 先求值时 React

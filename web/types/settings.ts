@@ -214,6 +214,12 @@ export interface TerminalSettings {
   sessionCpuWeight: number | null;
   /** 分屏快捷键（Ctrl+\ / Ctrl+-）在终端聚焦时放行给终端（如 SIGQUIT）。默认 false = 分屏优先 */
   splitShortcutPassthrough: boolean;
+  /**
+   * 终端内联图片（OSC 1337 / iTerm inline image protocol + SIXEL，F7.4）。
+   * 默认 false：@xterm/addon-image 为 beta 质量且每终端默认持有 128MB 图片存储，
+   * 多窗格内存放大明显；图片不随休眠 VT 重放恢复。开启后前端用保守上限懒加载。
+   */
+  inlineImagesEnabled: boolean;
 }
 
 /** Shell 信息 */

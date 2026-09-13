@@ -43,6 +43,7 @@ function createValue(overrides: Partial<TerminalSettings> = {}): TerminalSetting
     sessionCpuWeight: null,
 
     splitShortcutPassthrough: false,
+    inlineImagesEnabled: false,
     ...overrides,
   };
 }
@@ -159,6 +160,19 @@ describe("TerminalSection", () => {
     await user.click(taskQueue);
 
     expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ taskQueueEnabled: false }));
+  });
+
+  it("toggles the opt-in inline image feature from its default-off state", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<TerminalSection value={createValue()} onChange={onChange} />);
+
+    const inlineImages = screen.getByRole("switch", { name: /终端内联图片|Terminal inline images/i });
+    // F7.4：beta 能力默认关闭，必须显式开启。
+    expect(inlineImages).not.toBeChecked();
+    await user.click(inlineImages);
+
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ inlineImagesEnabled: true }));
   });
 
   it("emits null when the shell input is cleared", () => {

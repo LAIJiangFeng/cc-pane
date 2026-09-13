@@ -340,6 +340,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       lowerSessionPriority: true,
       sessionCpuWeight: null,
       splitShortcutPassthrough: false,
+      inlineImagesEnabled: false,
     },
     shortcuts: {
       bindings: {

@@ -273,6 +273,7 @@ export const SETTINGS_PANES: readonly SettingsPaneDefinition[] = [
       { id: "theme", titleKey: "terminalTheme", targetSectionId: "terminal-root" },
       { id: "renderer", titleKey: "rendererMode", descriptionKey: "rendererHint", targetSectionId: "terminal-root" },
       { id: "path-links", titleKey: "pathLinksEnabled", descriptionKey: "pathLinksEnabledHint", targetSectionId: "terminal-path-links" },
+      { id: "inline-images", titleKey: "inlineImagesEnabled", descriptionKey: "inlineImagesEnabledHint", keywordsKey: "searchKeywords.inlineImages", targetSectionId: "terminal-inline-images" },
       { id: "context-usage", titleKey: "showContextUsage", descriptionKey: "showContextUsageHint", targetSectionId: "terminal-context-usage" },
       { id: "status-bar", titleKey: "showStatusBar", descriptionKey: "showStatusBarHint", targetSectionId: "terminal-status-bar" },
       { id: "task-queue", titleKey: "taskQueueEnabled", descriptionKey: "taskQueueEnabledHint", targetSectionId: "terminal-task-queue" },

@@ -208,6 +208,23 @@ export default function TerminalSection({ value, onChange }: TerminalSectionProp
         </div>
       </SearchableSetting>
 
+      <SearchableSetting sectionId="terminal-inline-images">
+        <div className="flex items-start justify-between gap-4">
+          <div className="flex min-w-0 flex-col gap-1">
+            <Label htmlFor="terminal-inline-images-enabled">{t("inlineImagesEnabled")}</Label>
+            <p className="text-[11px]" style={{ color: "var(--app-text-tertiary)" }}>
+              {t("inlineImagesEnabledHint")}
+            </p>
+          </div>
+          <Switch
+            id="terminal-inline-images-enabled"
+            aria-label={t("inlineImagesEnabled")}
+            checked={value.inlineImagesEnabled ?? false}
+            onCheckedChange={(checked) => update("inlineImagesEnabled", checked)}
+          />
+        </div>
+      </SearchableSetting>
+
       <SearchableSetting sectionId="terminal-context-usage">
         <div className="flex flex-col gap-1">
           <div className="flex items-center gap-2">

@@ -74,6 +74,41 @@ describe("heavy dependency lazy boundaries", () => {
     expect(boundary).toContain('import("../terminalRendererController")');
   });
 
+  it("terminal image addon stays behind its own gated lazy boundary", () => {
+    // F7.4：addon-image 是 beta、默认关闭、独立懒加载，不并入 terminalXtermModules。
+    const boundary = readWebFile("components/panes/terminal/terminalImageAddon.ts");
+    expect(boundary).toContain('import("@xterm/addon-image")');
+    // 唯一运行时取值入口：除边界自身外，终端 init 只能静态引用本地 attach 封装。
+    const init = readWebFile("components/panes/terminal/useTerminalInstanceInit.ts");
+    expect(init).toContain('attachTerminalImageAddon');
+    expect(staticValueImports(init, "@xterm/addon-image")).toEqual([]);
+  });
+
+  it("keeps @xterm/addon-image out of the shared xterm chunk so the gate holds", () => {
+    // 源码级懒边界还不够：vite manualChunks 会把 node_modules/@xterm/* 一律卷进
+    // "xterm" chunk。若不先把 addon-image 拆出来，它会被静态并入每次终端打开都加载的
+    // xterm chunk，使「默认关闭」形同虚设。这里钉住两条规则：
+    //   1) addon-image 专属规则存在且返回独立 chunk 名；
+    //   2) 它排在通配 @xterm 规则之前（否则被前者先命中，专属规则永不生效）。
+    const config = readFileSync("vite.config.ts", "utf8");
+    const dedicatedLine = config
+      .split("\n")
+      .find((line: string) => line.includes("node_modules/@xterm/addon-image") && line.includes("return"));
+    const wildcardLine = config
+      .split("\n")
+      .find((line: string) =>
+        line.includes('node_modules/@xterm/') &&
+        !line.includes("addon-image") &&
+        line.includes("return"),
+      );
+
+    expect(dedicatedLine).toBeTruthy();
+    expect(dedicatedLine).toContain("terminal-image-addon");
+    expect(wildcardLine).toBeTruthy();
+    expect(wildcardLine).toContain('"xterm"');
+    expect(config.indexOf(dedicatedLine!)).toBeLessThan(config.indexOf(wildcardLine!));
+  });
+
   it("terminal view files have no static @xterm value imports", () => {
     const xtermSpecifiers = [
       "@xterm/xterm",
@@ -81,6 +116,7 @@ describe("heavy dependency lazy boundaries", () => {
       "@xterm/addon-serialize",
       "@xterm/addon-unicode11",
       "@xterm/addon-webgl",
+      "@xterm/addon-image",
       "@xterm/xterm/css/xterm.css",
     ];
     for (const file of [

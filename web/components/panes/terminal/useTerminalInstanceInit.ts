@@ -43,6 +43,7 @@ import type { CliTool, TerminalRendererMode } from "@/types";
 import type { RestoreLaunchState } from "../terminalRestoreQueue";
 import { registerTerminalParserHandlers } from "./terminalParserHandlers";
 import { attachTerminalInputIntegration } from "./terminalInputIntegration";
+import { attachTerminalImageAddon } from "./terminalImageAddon";
 import { createTerminalOnDataHandler } from "./terminalOnDataHandler";
 import { createTerminalResizeObserver } from "./terminalResizeObserver";
 import { launchOrAttachTerminalSession } from "./terminalSessionLaunch";
@@ -377,6 +378,13 @@ export function useTerminalInstanceInit({
         },
       });
       rendererControllerRef.current.configure(terminalRendererModeRef.current);
+
+      // F7.4：内联图片（OSC 1337 / SIXEL）按开关懒加载，默认关闭。
+      // fire-and-forget：取回 ~700KB chunk 不阻塞终端启动；落定时若已卸载则不附着
+      // （见 terminalImageAddon.ts）。addon 随 term.dispose() 一并销毁，无需另起 ref。
+      if (useSettingsStore.getState().settings?.terminal.inlineImagesEnabled) {
+        void attachTerminalImageAddon({ term, isMounted: () => isMounted, debugLog });
+      }
 
       // 输入装配（粘贴 / 文本域+原生菜单 / 拖放 / 自定义键）集中到独立模块，
       // 共享 runtimeKind 与 SSH 宿主路径的诚实提示回调（F2）。

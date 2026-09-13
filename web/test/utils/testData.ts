@@ -123,6 +123,7 @@ export function createTestSettings(overrides?: Partial<AppSettings>): AppSetting
       sessionCpuWeight: null,
 
       splitShortcutPassthrough: false,
+      inlineImagesEnabled: false,
     },
     shortcuts: { bindings: {} },
     general: {
