@@ -56,8 +56,10 @@ pub use drama::{
 };
 pub use external_skill::{DiscoveredExternalSkill, ExternalSkillSource};
 pub use git::{
-    GitChangeStatus, GitChangedFile, GitCommit, GitDiffSpec, GitLogPage, GitLogQuery, GitRepoInfo,
-    GitRepoState,
+    GitChangeStatus, GitChangedFile, GitCommit, GitConflictContent, GitConflictFile,
+    GitConflictStage, GitConflictStageKind, GitConflictSummary, GitConflictVersions, GitDiffSpec,
+    GitLogPage, GitLogQuery, GitMergeState, GitRepoInfo, GitRepoState, GitResolveConflictRequest,
+    GitResolveConflictResult,
 };
 pub use history::{
     // Diff 模型

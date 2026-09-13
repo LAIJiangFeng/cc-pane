@@ -1,5 +1,6 @@
 use crate::models::{
-    DiffResult, GitChangedFile, GitDiffSpec, GitLogPage, GitLogQuery, GitRepoInfo,
+    DiffResult, GitChangedFile, GitConflictSummary, GitConflictVersions, GitDiffSpec, GitLogPage,
+    GitLogQuery, GitRepoInfo, GitResolveConflictRequest, GitResolveConflictResult,
 };
 use crate::services::{GitService, HistoryService};
 use crate::utils::{
@@ -98,6 +99,47 @@ pub async fn get_git_diff(path: String, spec: GitDiffSpec) -> AppResult<DiffResu
     spawn_git_task(move || {
         GitService::new()
             .get_diff(Path::new(&path), &spec)
+            .map_err(AppError::from)
+    })
+    .await
+}
+
+/// 列出仓库内的冲突文件与合并状态（F3.2 三栏冲突解决）
+#[tauri::command]
+pub async fn list_git_conflicts(path: String) -> AppResult<GitConflictSummary> {
+    validate_path(&path)?;
+    spawn_git_task(move || {
+        GitService::new()
+            .list_conflicts(Path::new(&path))
+            .map_err(AppError::from)
+    })
+    .await
+}
+
+/// 读取单个冲突文件的 base/ours/theirs/工作区四个版本
+#[tauri::command]
+pub async fn get_git_conflict_versions(
+    path: String,
+    file: String,
+) -> AppResult<GitConflictVersions> {
+    validate_path(&path)?;
+    spawn_git_task(move || {
+        GitService::new()
+            .conflict_versions(Path::new(&path), &file)
+            .map_err(AppError::from)
+    })
+    .await
+}
+
+/// 写回解决结果并 git add 暂存
+#[tauri::command]
+pub async fn resolve_git_conflict(
+    request: GitResolveConflictRequest,
+) -> AppResult<GitResolveConflictResult> {
+    validate_path(&request.path)?;
+    spawn_git_task(move || {
+        GitService::new()
+            .resolve_conflict(&request)
             .map_err(AppError::from)
     })
     .await

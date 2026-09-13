@@ -312,13 +312,19 @@ function GitProjectGroup({
             state.changes.map((file) => {
               const badge = STATUS_BADGES[file.status];
               const path = displayPath(file);
+              const conflicted = file.status === "conflicted";
+              const repoRelativePath = file.newPath ?? file.oldPath ?? "";
               return (
                 <button
                   type="button"
                   key={`${file.oldPath ?? ""}:${file.newPath ?? ""}`}
                   className={`flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left hover:bg-[var(--app-hover)] ${showHeader ? "text-xs" : "text-[13px]"}`}
                   title={`${path} · ${t("explorer.gitContentComparison")}`}
-                  onClick={() => useDialogStore.getState().openGitTimeline(project.path, file)}
+                  onClick={() =>
+                    conflicted
+                      ? useDialogStore.getState().openGitConflict(project.path, repoRelativePath)
+                      : useDialogStore.getState().openGitTimeline(project.path, file)
+                  }
                 >
                   <span className={`w-3 shrink-0 text-center font-semibold ${badge?.className ?? "text-[var(--app-text-tertiary)]"}`}>
                     {badge?.letter ?? "?"}

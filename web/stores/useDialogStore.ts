@@ -64,6 +64,13 @@ interface DialogState {
   openGitTimeline: (projectPath: string, initialFile?: GitChangedFile) => void;
   closeGitTimeline: () => void;
 
+  // Git Conflict Resolution
+  gitConflictOpen: boolean;
+  gitConflictProjectPath: string;
+  gitConflictInitialFile: string | null;
+  openGitConflict: (projectPath: string, initialFile?: string) => void;
+  closeGitConflict: () => void;
+
   // Session Cleaner
   sessionCleanerOpen: boolean;
   sessionCleanerProjectPath: string;
@@ -159,6 +166,19 @@ export const useDialogStore = create<DialogState>((set) => ({
       gitTimelineInitialFile: initialFile ?? null,
     }),
   closeGitTimeline: () => set({ gitTimelineOpen: false, gitTimelineInitialFile: null }),
+
+  // Git Conflict Resolution
+  gitConflictOpen: false,
+  gitConflictProjectPath: "",
+  gitConflictInitialFile: null,
+  openGitConflict: (projectPath, initialFile) =>
+    set({
+      gitConflictOpen: true,
+      gitConflictProjectPath: projectPath,
+      gitConflictInitialFile: initialFile ?? null,
+    }),
+  closeGitConflict: () =>
+    set({ gitConflictOpen: false, gitConflictProjectPath: "", gitConflictInitialFile: null }),
 
   // Session Cleaner
   sessionCleanerOpen: false,

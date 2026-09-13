@@ -6,7 +6,10 @@ use axum::{
     Json,
 };
 use cc_panes_core::{
-    models::{DiffResult, GitChangedFile, GitDiffSpec, GitLogPage, GitLogQuery, GitRepoInfo},
+    models::{
+        DiffResult, GitChangedFile, GitConflictSummary, GitConflictVersions, GitDiffSpec,
+        GitLogPage, GitLogQuery, GitRepoInfo, GitResolveConflictRequest, GitResolveConflictResult,
+    },
     services::{GitService, WorktreeInfo},
     utils::{
         output_with_timeout, prepare_git_clone_auth, validate_git_url, validate_path, AppResult,
@@ -52,6 +55,13 @@ pub struct GitDiffRequest {
 #[serde(rename_all = "camelCase")]
 pub struct GitPathRequest {
     pub path: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitConflictVersionsQuery {
+    pub path: String,
+    pub file: String,
 }
 
 #[derive(Deserialize)]
@@ -319,6 +329,45 @@ pub async fn get_git_diff(
         validate_path(&request.path)?;
         GitService::new()
             .get_diff(Path::new(&request.path), &request.spec)
+            .map_err(Into::into)
+    })
+    .await
+    .map(Json)
+}
+
+pub async fn get_git_conflicts(
+    Query(query): Query<PathQuery>,
+) -> Result<Json<GitConflictSummary>, (StatusCode, String)> {
+    spawn_git(move || {
+        validate_path(&query.path)?;
+        GitService::new()
+            .list_conflicts(Path::new(&query.path))
+            .map_err(Into::into)
+    })
+    .await
+    .map(Json)
+}
+
+pub async fn get_git_conflict_versions(
+    Query(query): Query<GitConflictVersionsQuery>,
+) -> Result<Json<GitConflictVersions>, (StatusCode, String)> {
+    spawn_git(move || {
+        validate_path(&query.path)?;
+        GitService::new()
+            .conflict_versions(Path::new(&query.path), &query.file)
+            .map_err(Into::into)
+    })
+    .await
+    .map(Json)
+}
+
+pub async fn resolve_git_conflict(
+    Json(request): Json<GitResolveConflictRequest>,
+) -> Result<Json<GitResolveConflictResult>, (StatusCode, String)> {
+    spawn_git(move || {
+        validate_path(&request.path)?;
+        GitService::new()
+            .resolve_conflict(&request)
             .map_err(Into::into)
     })
     .await

@@ -205,6 +205,12 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/git/changed-files", get(git::get_git_changed_files))
         .route("/api/git/commit-files", get(git::list_git_commit_files))
         .route("/api/git/diff", post(git::get_git_diff))
+        .route("/api/git/conflicts", get(git::get_git_conflicts))
+        .route(
+            "/api/git/conflict-versions",
+            get(git::get_git_conflict_versions),
+        )
+        .route("/api/git/resolve-conflict", post(git::resolve_git_conflict))
         .route("/api/git/pull", post(git::git_pull))
         .route("/api/git/push", post(git::git_push))
         .route("/api/git/fetch", post(git::git_fetch))

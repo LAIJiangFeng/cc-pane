@@ -476,6 +476,7 @@ impl GitService {
 }
 
 mod c2;
+mod conflict;
 
 #[cfg(test)]
 mod ignored_parse_tests {
