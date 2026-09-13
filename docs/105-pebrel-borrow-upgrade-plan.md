@@ -149,12 +149,13 @@ Pebrel 的 ROADMAP 有三道可重复闸门，这是**最值得学**的部分。
   > - **降级与平台边界（诚实声明）**：
   >   - 图片**不会随休眠（SerializeAddon VT 重放）恢复**——属可接受降级，已在 i18n 提示与代码注释写明。
   >   - addon-image 用独立 overlay canvas（`canvas.xterm-image-layer`），不扰动 WebGL/DOM 渲染器本体。
-  >   - **真实引擎验收（已闭环）**：单测全部 mock 掉 `@xterm/addon-image`，只证接线/选项/生命周期，证不了「真 addon + 真 xterm6 是否真出图」。故另起一次性 headless-Chrome(153) 验收脚本：esbuild 打包**真实** `@xterm/xterm@6.0.0` + **真实** `@xterm/addon-image@0.9.0`，并 `import` 生产 `buildImageAddonOptions()`（杜绝手抄偏差），写入真实协议字节后读取 overlay canvas 像素：
-  >     - **OSC 1337（iTerm IIP）**：写 8×8 纯红 PNG → 观测到 `canvas.xterm-image-layer`，采样像素 `[220,20,20,255]`（与编码的红色逐字节一致），`storageImages=1`、`storageUsage=0.000256MB`（=8×8×4B）。
-  >     - **SIXEL**：写 12×6 纯绿 DCS-q 块 → 采样像素 `[0,255,0,255]`（纯绿一致），WASM 解码器实跑（`decMode=1/decLevel=1`、`decWidth=12/decHeight=6`、`handlerSize=26`）、`storageUsage=0.000288MB`（=12×6×4B）。
+  >   - **真实引擎验收（已闭环）**：单测全部 mock 掉 `@xterm/addon-image`，只证接线/选项/生命周期，证不了「真 addon + 真 xterm6 是否真出图」。故另起一次性 headless 验收脚本：esbuild 打包**真实** `@xterm/xterm@6.0.0` + **真实** `@xterm/addon-image@0.9.0`，并 `import` 生产 `buildImageAddonOptions()`（杜绝手抄偏差），写入真实协议字节后读取 overlay canvas 像素、轮询真实 `ImageStorage`（`_images.size` / `getUsage()`）至异步解码落地。先后两轮真实引擎均通过：
+  >     - 首轮 headless **Chrome 153**；次轮换用 **`msedge.exe` 152.0.4191.66**——与本机已安装的 **WebView2 Runtime 152.0.4191.66 同一 Chromium 构建号**（即 Tauri 实际内嵌的引擎），证据更强。
+  >     - **OSC 1337（iTerm IIP）**：写 8×8 纯红 PNG → 观测到 `canvas.xterm-image-layer`，解码 `mime=image/png`/8×8，采样像素 `[220,20,20,255]`（与编码红色逐字节一致），`storageImages=1`、`storageUsage=0.000256MB`（=8×8×4B）。
+  >     - **SIXEL**：写 12×6 纯绿 DCS-q 块（`#1;2;0;100;0`，Pu=2 为 RGB%）→ 采样像素 `[0,255,0,255]`（纯绿一致），WASM 解码器实跑（`decWidth=12/decHeight=6`）、`storageUsage=0.000288MB`（=12×6×4B）。
   >     - 生产 `buildImageAddonOptions()` 在真 addon 校验下**零 console 报错/告警**（`storageLimit=32` 落在合法 MB 区间）。
-  >     - 验收中实测复现两类「mock 测不出」的真实坑并据此加固：①`storageLimit` 单位是 **MB 非字节**，误传字节会被真 addon `console.error` 后**静默回落 10MB**——已加单测守卫钉住单位契约；②SIXEL 解码器是**异步**创建（`DecoderAsync→WASM`），就绪前写入会被静默丢弃——属上游行为，真实 PTY 场景由持续输入自然覆盖，已在脚本注释记录。
-  >   - **残留平台边界（诚实声明）**：上述证明的是 Chromium 引擎下「真 addon 对真 xterm6 真实出图」。仍属 **Windows-host-required** 的是 Tauri **WebView2** 宿主下的最终视觉合成、与本仓库 WebGL 透明/花屏已知坑（CLAUDE.md）在同屏多窗格时的叠加表现、以及多图滚动/休眠恢复的真机观感——这些需 Windows host 实跑确认，本环境不声称已验证。
+  >     - 验收中实测复现三类「mock 测不出」的真实契约/坑并据此加固：①`storageLimit` 单位是 **MB 非字节**，误传字节会被真 addon `console.error` 后**静默回落 10MB**——已加单测守卫钉住单位契约；②SIXEL 解码器是**异步**创建（`DecoderAsync→WASM`），就绪前写入会被静默丢弃——属上游行为，真实 PTY 场景由持续输入自然覆盖，已在脚本注释记录；③IIP 解码同样是**异步**的（`createImageBitmap(blob)→storage.addImage`），断言必须轮询存储而非定长 sleep；且 OSC 头 `size=` 必须等于**真实解码后字节数**，base64 padding 会让 `floor(b64len*3/4)` 过计 1 字节，触发解码器 size 校验失败、`mime=unsupported` 静默丢弃（实测：size=111 失败、size=110 成功）。这些是**生成端**（CLI/脚本）构造 IIP 序列的契约，本仓库为渲染接收端，生产代码无需改动。
+  >   - **残留平台边界（诚实声明，已收窄）**：嵌入式 `msedgewebview2.exe` 无法独立 headless 驱动（它是 Win32/COM 控件，须由宿主进程经 WebView2Loader 装配——实测探针确认其 standalone `--dump-dom` 与本地 fetch 均无响应）。但次轮已用**与 WebView2 Runtime 完全同构建号（152.0.4191.66）**的 `msedge.exe` 出图，证明渲染引擎层面一致。仍属 **Windows-host-required**、本环境不可验的，仅剩 Tauri 把该引擎**嵌入 WebView2 宿主后**的最终视觉合成、与本仓库 WebGL 透明/花屏已知坑（CLAUDE.md）在同屏多窗格时的叠加表现、以及多图滚动/休眠恢复的真机观感。
   >   - 因 addon 仍为 beta，默认关闭是有意保守选择；如上游成熟或出现稳定替代，可重评是否转默认开启。
 
 ## 4. 非功能需求
