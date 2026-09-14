@@ -8,7 +8,7 @@ import { useTabAttentionStore } from "@/stores/useTabAttentionStore";
 import InlineRename from "@/components/ui/InlineRename";
 import SessionBindDialog from "@/components/panes/SessionBindDialog";
 import { computeTabNumbers } from "@/lib/tabNumbering";
-import type { OscProgressBadge, Tab, TerminalStatusType } from "@/types";
+import type { Tab, TerminalStatusType } from "@/types";
 import type { TFunction } from "i18next";
 import { DENSITY, type Density } from "./tabBarDensity";
 import NewTabMenu, { type NewTabActions } from "./NewTabMenu";
@@ -102,7 +102,6 @@ function SortableTab({
   isPaneFullscreen,
   activeTabFg,
   getStatus,
-  getOscProgress,
   registerTabNode,
   displayNumber,
   onOpenSessionBind,
@@ -146,7 +145,6 @@ function SortableTab({
   isPaneFullscreen?: boolean;
   activeTabFg?: string;
   getStatus: (sessionId: string | null) => TerminalStatusType | null;
-  getOscProgress: (sessionId: string | null) => OscProgressBadge | null;
   registerTabNode: (tabId: string, node: HTMLDivElement | null) => void;
   displayNumber?: string;
   onOpenSessionBind: (tab: Tab) => void;
@@ -227,13 +225,7 @@ function SortableTab({
             style={{ background: "var(--app-accent)" }}
           />
         ) : null}
-        <TabTypeIcon
-          tab={tab}
-          statusSize={d.statusSize}
-          iconSize={d.pinSize}
-          getStatus={getStatus}
-          getOscProgress={getOscProgress}
-        />
+        <TabTypeIcon tab={tab} statusSize={d.statusSize} iconSize={d.pinSize} getStatus={getStatus} />
         {/* 会话绑定标志：绿=已确定 resume id（重启可恢复），灰=未绑定（点击手动绑定） */}
         {tab.contentType === "terminal" && tab.cliTool && tab.cliTool !== "none" && (
           <button
@@ -412,7 +404,6 @@ export default memo(function TabBar({
 }: TabBarProps) {
   const { t } = useTranslation("panes");
   const getStatus = useTerminalStatusStore((s) => s.getStatus);
-  const getOscProgress = useTerminalStatusStore((s) => s.getOscProgress);
 
   const [editingTabId, setEditingTabId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState("");
@@ -589,7 +580,6 @@ export default memo(function TabBar({
                 isPaneFullscreen={isPaneFullscreen}
                 activeTabFg={activeTabFg}
                 getStatus={getStatus}
-                getOscProgress={getOscProgress}
                 registerTabNode={registerTabNode}
                 displayNumber={tabNumbers.get(tab.id)}
                 onOpenSessionBind={setSessionBindTab}

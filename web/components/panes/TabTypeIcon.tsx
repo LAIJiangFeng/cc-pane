@@ -5,22 +5,23 @@
 // 混在一排里分不清哪个是哪个。图标表见 lib/tabContentType.ts。
 import StatusIndicator from "@/components/StatusIndicator";
 import { TAB_CONTENT_ICON } from "@/lib/tabContentType";
-import type { OscProgressBadge, Tab, TerminalStatusType } from "@/types";
+import { useTerminalStatusStore } from "@/stores/useTerminalStatusStore";
+import type { Tab, TerminalStatusType } from "@/types";
 
 export default function TabTypeIcon({
   tab,
   statusSize,
   iconSize,
   getStatus,
-  getOscProgress,
 }: {
   tab: Tab;
   statusSize: number;
   iconSize: number;
   getStatus: (sessionId: string | null) => TerminalStatusType | null;
-  /** OSC 9;4 进度徽章（F5），有值时状态点外圈叠加进度环。 */
-  getOscProgress: (sessionId: string | null) => OscProgressBadge | null;
 }) {
+  // OSC 9;4 进度徽章（F5）：有值时状态点外圈叠加进度环。直接读 store 选择器，
+  // 避免 TabBar → SortableTab → 这里三层 prop 钻透（TabBar 受行数棘轮约束）。
+  const getOscProgress = useTerminalStatusStore((s) => s.getOscProgress);
   const TypeIcon = tab.contentType === "terminal" ? null : TAB_CONTENT_ICON[tab.contentType];
   if (!TypeIcon) {
     return (

@@ -18,6 +18,9 @@ const ALLOWLIST: Record<string, string[]> = {
   // 壁纸 dim 层必须使用中性黑混合，避免随主题产生彩色遮罩。
   "layout/MainWallpaperLayer.tsx": ["#000"],
   "settings/WallpaperPreview.tsx": ["#000"],
+  // OSC 进度环（F5）用 radial-gradient mask 抠出环形，#000 仅作遮罩 alpha 载体，
+  // 与主题色无关（环色由 conic-gradient 的 var(--app-*) 决定）。
+  "StatusIndicator.tsx": ["#000"],
   // Local History 标签来源色区分 git/会话/用户/构建/恢复，属于类别编码。
   "localhistory/useLocalHistoryData.ts": [
     "#f59e0b",
