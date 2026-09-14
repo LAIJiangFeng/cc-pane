@@ -109,7 +109,10 @@ pub use session_index::{
     SessionIndexScanReport, SessionIndexScope, SessionScanState,
 };
 pub use session_restore::{SavedSession, TerminalSessionProvenance};
-pub use ssh_machine::{AuthMethod, SshMachine, SshMachineConfig, SshMachineUpsertRequest};
+pub use ssh_machine::{
+    AuthMethod, SshJumpHost, SshMachine, SshMachineConfig, SshMachineUpsertRequest, SshProxyConfig,
+    SshProxyKind,
+};
 pub use system_stats::{
     KillProcessResult, ManagedSessionRoot, OrphanProcessInfo, ResourceTree, SessionProcessInfo,
     SessionResourceUsage, SystemStats, TruncatedProcessSummary,

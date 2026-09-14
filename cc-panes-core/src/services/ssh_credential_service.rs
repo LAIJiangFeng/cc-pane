@@ -163,6 +163,70 @@ impl SshCredentialService {
             .unwrap_or_else(|error| error.into_inner())
             .remove(machine_id);
     }
+
+    // ---- 代理凭据 -------------------------------------------------------
+    //
+    // 代理密码与主机密码同样只存 keyring，绝不落盘或进模型。账号名用
+    // `{machine_id}:proxy` 复合键复用同一个 keyring service：机器 id 是 UUID，
+    // 不可能自带 `:proxy` 后缀，因此与主机密码条目天然不冲突。
+
+    /// 写入持久化代理密码（系统 keyring）。
+    pub fn store_proxy_password(&self, machine_id: &str, password: &str) -> Result<()> {
+        self.backend
+            .set_password(&proxy_account(machine_id), password)?;
+        self.clear_temporary_proxy_password(machine_id);
+        Ok(())
+    }
+
+    /// 写入仅存活于本次进程的代理密码，用于「不记住密码」的一次性认证。
+    pub fn store_temporary_proxy_password(&self, machine_id: &str, password: &str) {
+        self.temporary_passwords
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(proxy_account(machine_id), password.to_string());
+    }
+
+    /// 只读持久化代理密码。
+    pub fn load_proxy_password(&self, machine_id: &str) -> Result<Option<String>> {
+        self.backend.get_password(&proxy_account(machine_id))
+    }
+
+    /// 连接时使用的代理密码：优先内存临时值，回退 keyring。
+    pub fn load_connection_proxy_password(&self, machine_id: &str) -> Result<Option<String>> {
+        let account = proxy_account(machine_id);
+        if let Some(password) = self
+            .temporary_passwords
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(&account)
+            .cloned()
+        {
+            return Ok(Some(password));
+        }
+        self.backend.get_password(&account)
+    }
+
+    pub fn has_proxy_password(&self, machine_id: &str) -> Result<bool> {
+        Ok(self.load_proxy_password(machine_id)?.is_some())
+    }
+
+    pub fn delete_proxy_password(&self, machine_id: &str) -> Result<()> {
+        self.backend.delete_password(&proxy_account(machine_id))?;
+        self.clear_temporary_proxy_password(machine_id);
+        Ok(())
+    }
+
+    pub fn clear_temporary_proxy_password(&self, machine_id: &str) {
+        self.temporary_passwords
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&proxy_account(machine_id));
+    }
+}
+
+/// 代理密码在 keyring / 临时缓存中使用的账号名。
+fn proxy_account(machine_id: &str) -> String {
+    format!("{machine_id}:proxy")
 }
 
 #[cfg(test)]
@@ -184,6 +248,88 @@ mod tests {
         assert_eq!(
             service.load_connection_password("m1").unwrap().as_deref(),
             Some("persisted")
+        );
+    }
+
+    /// 代理密码与主机密码必须互相隔离：同一台机器可以有两个不同的密码，
+    /// 删除其一个绝不能影响另一个。
+    #[test]
+    fn proxy_password_is_isolated_from_host_password() {
+        let service = SshCredentialService::new_memory();
+        service.store_password("m1", "host-secret").unwrap();
+        service.store_proxy_password("m1", "proxy-secret").unwrap();
+
+        assert_eq!(
+            service.load_password("m1").unwrap().as_deref(),
+            Some("host-secret")
+        );
+        assert_eq!(
+            service.load_proxy_password("m1").unwrap().as_deref(),
+            Some("proxy-secret")
+        );
+        assert!(service.has_proxy_password("m1").unwrap());
+
+        service.delete_proxy_password("m1").unwrap();
+        assert!(!service.has_proxy_password("m1").unwrap());
+        assert_eq!(
+            service.load_password("m1").unwrap().as_deref(),
+            Some("host-secret"),
+            "deleting the proxy password must not touch the host password"
+        );
+    }
+
+    #[test]
+    fn temporary_proxy_password_wins_without_becoming_persistent() {
+        let service = SshCredentialService::new_memory();
+        service.store_temporary_proxy_password("m1", "ephemeral");
+
+        assert_eq!(service.load_proxy_password("m1").unwrap(), None);
+        assert!(
+            !service.has_proxy_password("m1").unwrap(),
+            "temporary proxy passwords must not be reported as stored"
+        );
+        assert_eq!(
+            service
+                .load_connection_proxy_password("m1")
+                .unwrap()
+                .as_deref(),
+            Some("ephemeral")
+        );
+
+        // 持久化后应清掉临时值，避免过期口令继续被使用。
+        service.store_proxy_password("m1", "persisted").unwrap();
+        assert_eq!(
+            service
+                .load_connection_proxy_password("m1")
+                .unwrap()
+                .as_deref(),
+            Some("persisted")
+        );
+
+        service.clear_temporary_proxy_password("m1");
+        assert_eq!(
+            service
+                .load_connection_proxy_password("m1")
+                .unwrap()
+                .as_deref(),
+            Some("persisted")
+        );
+    }
+
+    /// 主机密码的临时值不得泄漏成代理密码（共享同一张临时表，靠键区分）。
+    #[test]
+    fn host_temporary_password_does_not_leak_into_proxy_lookup() {
+        let service = SshCredentialService::new_memory();
+        service.store_temporary_password("m1", "host-only");
+
+        assert_eq!(
+            service.load_connection_proxy_password("m1").unwrap(),
+            None,
+            "a host password must never be used as a proxy password"
+        );
+        assert_eq!(
+            service.load_connection_password("m1").unwrap().as_deref(),
+            Some("host-only")
         );
     }
 }

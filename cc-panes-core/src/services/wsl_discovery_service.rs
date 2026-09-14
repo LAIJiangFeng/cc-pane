@@ -254,6 +254,9 @@ mod inner {
                 default_path: None,
                 tags: vec![],
                 has_stored_password: false,
+                proxy: None,
+                jump_host: None,
+                has_stored_proxy_password: false,
                 created_at: String::new(),
                 updated_at: String::new(),
             }];
@@ -276,6 +279,9 @@ mod inner {
                 default_path: None,
                 tags: vec!["wsl".into()],
                 has_stored_password: false,
+                proxy: None,
+                jump_host: None,
+                has_stored_proxy_password: false,
                 created_at: String::new(),
                 updated_at: String::new(),
             }];
@@ -297,6 +303,9 @@ mod inner {
                 default_path: None,
                 tags: vec!["wsl".into()],
                 has_stored_password: false,
+                proxy: None,
+                jump_host: None,
+                has_stored_proxy_password: false,
                 created_at: String::new(),
                 updated_at: String::new(),
             }];

@@ -270,6 +270,9 @@ export type {
   AuthMethod,
   SshConnectivityResult,
   SshMachineUpsertRequest,
+  SshProxyKind,
+  SshProxyConfig,
+  SshJumpHost,
 } from "./ssh-machine";
 export type {
   ClaudeProcess,

@@ -62,6 +62,7 @@ impl TerminalBackend for NoopTerminalBackend {
             current_tool_use_id: None,
             current_tool_summary: None,
             updated_at: 0,
+            osc_progress: None,
         }])
     }
 
@@ -208,7 +209,10 @@ fn machine(id: &str, name: &str) -> SshMachine {
         description: Some("Test host".to_string()),
         default_path: Some("~/project".to_string()),
         tags: vec!["test".to_string()],
+        proxy: None,
+        jump_host: None,
         has_stored_password: false,
+        has_stored_proxy_password: false,
         created_at: "2026-01-01T00:00:00Z".to_string(),
         updated_at: "2026-01-01T00:00:00Z".to_string(),
     }
@@ -220,6 +224,9 @@ fn request(machine: SshMachine) -> SshMachineUpsertRequest {
         remember_password: false,
         password_input: None,
         clear_stored_password: false,
+        remember_proxy_password: false,
+        proxy_password_input: None,
+        clear_stored_proxy_password: false,
     }
 }
 
