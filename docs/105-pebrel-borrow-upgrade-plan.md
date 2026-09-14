@@ -85,6 +85,14 @@ CC-Panes 的 git 能力停在分支/worktree/快照/`get_log`/`get_diff` 层面�
 - **F3.2 三栏冲突解决**：对处于冲突的文件提供 ours / result / theirs 三栏对比编辑，保存即**写回文件并 `git add` 暂存**。
   - 验收：制造一次冲突 → 打开冲突文件 → 三栏可编辑 → 保存后 `git status` 显示该文件已暂存、冲突标记消失。
   - 边界：大文件/二进制冲突要诚实降级（提示用外部工具），不假装可解。
+  > **落地状态（提交 71fb4f46，22 文件 +2458/−47）**：F3.1 / F3.2 已实现并通过单测。
+  > - 后端：`models/git.rs` 新增冲突模型（`GitConflictSummary/GitConflictFile/GitConflictStage(Kind)/GitConflictContent/GitConflictVersions`、`GitMergeState`、`GitResolveConflictRequest/Result`）；`git_service/conflict.rs` 新模块（465 行）——`git status --porcelain=v2` 冲突解析、merge/rebase/cherry-pick 状态探测（MERGE_HEAD / rebase-merge / rebase-apply / CHERRY_PICK_HEAD）、`:1:/:2:/:3:` 三向 stage 读取（二进制探测 + 2MiB 上限）、原子化解决（临时文件落盘 + `git add` 暂存）。
+  > - 路由/命令：`GET /api/git/conflicts`、`GET /api/git/conflict-versions`、`POST /api/git/resolve-conflict`（routes/mod.rs 注册，Web/HTTP 端可用）。`git_commands.rs` 新增 3 个 `#[tauri::command]`（`list_git_conflicts`/`get_git_conflict_versions`/`resolve_git_conflict`）。
+  > - **整合修正（协调者）**：该 3 命令初版**漏在 `lib.rs` 的 `invoke_handler` 注册**。前端 `gitService` 走 `invokeOrApi`——桌面端直接 `invoke`、**无 HTTP 回落**（见 `web/services/apiClient.ts`），未注册会让桌面端 `invoke` 抛 "command not found"，F3 冲突解决在桌面端完全不可用（只有 Web 端能用）。已在 lib.rs 导入区（字母序）与 Git 命令注册段补上 3 个命令，`cargo check -p cc-panes --all-targets` 绿。这是 AGENTS.md「新功能 7 步」第 4 步（register in lib.rs）的遗漏，属真实整合缺口而非文档笔误。
+  > - 前端：`git/GitGraphView.tsx` Canvas 语义轨道拓扑图（本地/远端分支、tag、merge 汇聚点着色；`gitGraph.ts` 布局算法 231 行 + 211 行测试）；`git/ConflictResolveDialog.tsx` ours/result/theirs 三栏（result 可编辑、use ours/theirs 快捷、保存即暂存并提示剩余冲突数；二进制/超 2MiB 诚实降级提示外部工具；`conflictModel.ts` 冲突标记解析 + 测试）。`GitTimelinePanel` 接入拓扑视图，侧栏 `ExplorerGitSection` 冲突文件一键进解决面板（`useDialogStore.gitConflict*` + `AppDialogs` 挂载）。
+  > - i18n：en/zh-CN `gitGraph_*` 4 键 + `gitConflict_*` 22 键。
+  > - 测试：`git_tests.rs` 118 行路由/解析测试 + 前端 `gitGraph`/`conflictModel`/`ConflictResolveDialog` 共 516 行测试；`cargo test --workspace` 退出码 0，`tsc --noEmit` 干净。
+  > - **验证边界**：验收条款「制造一次真实冲突 → 三栏编辑 → 保存后 git status 已暂存」的端到端真机流程（Windows host + 真实仓库冲突）**未验证**；本轮验证到单测、编译与类型层面。拓扑图对真实分叉合并历史仓库的渲染正确性同样待真机对账。
 
 ### F4 SSH 每主机代理 + 跳板机 + 连接路线预览 · P1
 
@@ -102,6 +110,13 @@ CC-Panes 的活动状态权威来源是 hook（`cc-panes-cli-hook`）。Pebrel �
 - **F5.1** 识别 `OSC 9;4` 的 running/paused/error 子状态，仅用于标签/侧栏**徽章动画**，不进入会话状态机的权威跃迁。
 - **F5.2** hook 已上报状态时，hook 优先，OSC 9;4 不覆盖。
   - 验收：一个发 OSC 9;4 的 CLI → 徽章有运行/暂停/错误动画；同时 hook 也上报 → 以 hook 为准，无状态打架。
+  > **落地状态（提交 0f02dec1 + 守卫修复 a11c8815）**：F5.1 / F5.2 已实现并通过单测。
+  > - 后端：`osc_state_detect` 新增 `OscSignal::Progress { state, progress }`，只认 `9;4;<state>[;<progress>]`，progress 钳制 0-100，其余 OSC 9 序列仍忽略。`TerminalService` 新增旁路存储 `osc_progress_store`（session_id → 最近信号 + 时刻），读线程经 `apply_osc_progress_signal` 落盘。生命周期：Running/Indeterminate 停更 10s 后 TTL 衰减为 None 并清条目（CLI 崩溃不发清除序列，避免进度条卡死）；Paused/Error 按 ConEmu 协议黏滞，需显式 `9;4;0` 清除；会话退出与 `kill_with_reason` 同步清理。`SessionStatusInfo` 新增可选 `osc_progress`（camelCase + `skip_serializing_if` + serde default，旧客户端向后兼容）。
+  > - **F5.1/F5.2 硬约束（已守住）**：`apply_osc_signal` 对 Progress 直接 return，徽章**绝不进入会话状态机**、不参与权威跃迁；**不写 `SessionStateEntry`**（避免污染 `last_hook_event_at` 导致无 hook 的 OSC-only CLI 被误关 ANSI 推断）；前端进度环只叠加在状态点外圈，**状态点本体颜色仍由 hook 权威 status 决定**。
+  > - 前端：`TerminalStatusInfo.oscProgress` + store 事件去重补该字段比较（漏比会抑制进度更新，与后端 `same_status_payload` 同款 bug，两处都修了）+ `getOscProgress` 选择器。`StatusIndicator` 有值时外层改 relative 容器、`conic-gradient` 渲染进度环（indeterminate 态 `cc-osc-spin` 旋转动画），无值时 DOM 与原实现完全一致。三渲染路径接线：标签栏（`TabTypeIcon` 内部直读 store）、窗格状态条（环 + % 文字）、侧栏工作空间终端列表。i18n `oscProgress_{running,paused,error,indeterminate}`（en/zh-CN）。
+  > - 测试：后端 9 例（落盘/`9;4;0` 清除/Running 超 TTL 衰减且条目被清/TTL 内仍可解析/Paused·Error 黏滞/全状态映射/非 Progress 被忽略/多会话隔离）；前端 17 例（既有状态点回归保护 + 进度环渲染/环色映射/indeterminate 旋转/状态点本体色不被覆盖/tooltip 含百分比）。
+  > - **守卫破窗与修复（a11c8815）**：初版 F5 提交信息声称「vitest 全绿」，但全量复验暴露两处真破窗，已修——① `lineRatchet`：TabBar.tsx 因 `getOscProgress` prop 钻透链膨胀到 636 行（基线 634），改为 `TabTypeIcon` 内部直接 `useTerminalStatusStore` 读选择器，移除三层 prop 透传，TabBar 回落 626 行；② `colorGuard`：进度环 `radial-gradient` mask 的 alpha 载体写成裸 `#000`，按既有先例（壁纸 dim 黑）登记进 allowlist 并注明理由（与主题色无关，环色由 `var(--app-*)` 决定）。`cargo test --workspace` 退出码 0、`tsc --noEmit` 干净、panes 全量 817/817 通过。（同批 vitest 里 LaunchProfilesPanel 一例超时系与 cargo test 并发争用的 flaky，单独重跑 16/16 通过。）
+  > - **验证边界**：Windows host 下真实 CLI 发 OSC 9;4 的端到端视觉表现（进度环实际渲染、与 hook 状态并存时无打架）**未验证**；本轮验证到单测、编译、类型与守卫层面。
 
 ### F6 终端渲染验收闸门（工程纪律，非功能） · P1
 
