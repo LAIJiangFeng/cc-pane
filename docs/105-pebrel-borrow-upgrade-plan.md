@@ -102,6 +102,14 @@ CC-Panes 的 git 能力停在分支/worktree/快照/`get_log`/`get_diff` 层面�
 - **F4.2** 连接前展示**路线预览**（本地 → 代理 → 跳板 → 目标），凭据掩码显示。
 - **F4.3** 代理凭据走 keyring，与现有密码存储同路径，不落明文。
   - 验收：配一台经跳板的内网机器 → 路线预览正确 → 连接成功；旧的不带代理的机器行为不变。
+  > **落地状态（提交 739ddf87，22 文件 +3615/−127）**：F4.1 / F4.2 / F4.3 已实现并通过单测。
+  > - **协调经过（如实记录）**：F4 由 swarm worker（microbe）实现，其完工报告（"docs/105 F4 — Complete / Everything is green"）写进了自身 session log，但**因不在协调者同一 swarm、DM 通道不通而未送达**。协调者据此独立复现验证——`cargo test -p cc-panes-core ssh_` 64 例通过、前端 `sshRouteForm/sshRoutePreview` 30 例通过、`cargo check`/`clippy(core/cc-panes/web/daemon) -D warnings`/`cargo fmt --check`/`tsc --noEmit` 全干净、前后端接线完整非孤儿——确认全绿后代为提交（共享文件 `models/mod.rs`/`services/mod.rs`/`wsl_discovery_service.rs`/i18n/`ssh_machines_tests.rs` 已逐 hunk 核实纯 F4，未触碰禁区文件）。
+  > - 后端模型（serde 向后兼容）：`ssh_machine.rs` 新增 `SshProxyKind(Socks5/Http)`/`SshProxyConfig`/`SshJumpHost`（引用 `machineId` 或内联 `host`），`SshMachine` 加可选 `proxy`/`jump_host` + 运行时标志 `has_stored_proxy_password`（不落盘）；旧配置解析/序列化往返/默认端口/凭据判定单测齐全。`uses_routed_connection()` 守卫：配了代理或跳板的机器**必须走内嵌终端**——系统 `ssh` 回退不带 `ProxyCommand`/`-J` 会静默绕过代理（安全正确性问题）。
+  > - 后端路线：`ssh_connection_service` `resolve_route → open_routed_stream`；代理隧道把 `TcpStream` 直接交 `set_tcp_stream`（无需中转），仅跳板机需 loopback relay 线程（持有 channel+jump session、EOF 自终止）；新增 `ssh_proxy_bridge.rs`（851 行）SOCKS5/HTTP 握手隧道 + jump relay（10 单测：认证、凭据拒绝错误不泄密、连接拒绝原因）。**仅支持单层跳板**，被引用跳板机若自身还配跳板则返回明确错误（非静默截断）。
+  > - 凭据 keyring：`ssh_credential_service` `store/load/delete_proxy_password` + 一次性「不记住」临时密码；账号名 `{machine_id}:proxy` 复合键复用同一 keyring service；含主机/代理密码隔离、临时值不泄漏成代理密码单测。
+  > - 前端：`SshRouteEditor`（受控渲染）+ `SshRoutePreview`（本地→代理→跳板→目标，凭据掩码）+ `SshPasswordSection`，纯函数 `sshRouteForm`/`sshRoutePreview` 经 `useSshRouteForm` 收敛校验/脏检测，接进 `SshMachineDialog`。i18n en/zh-CN 新增 `ssh.route/proxy/jump.*` 38 键。
+  > - **未新增 Tauri 命令，`lib.rs` 无需改动**（F4 走 routes/HTTP，与 F3 必须注册到 `invoke_handler` 的情况不同）。`ssh_machines_tests.rs` 含一行 F5 连带的 `osc_progress: None` mock（文件 F4 归属，随本提交带入）。
+  > - **验证边界**：真实代理/跳板端到端连接属 **Windows-host-required**，本轮验证到单测/编译/类型/守卫层面；真机连接走查（配一台经跳板的内网机器 → 路线预览正确 → 连接成功 → 旧机器行为不变）待用户在 Windows host 确认。
 
 ### F5 终端活动徽章补 OSC 9;4 兜底 · P2
 
