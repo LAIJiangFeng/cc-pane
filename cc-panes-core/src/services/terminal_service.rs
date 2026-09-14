@@ -6155,7 +6155,11 @@ mod tests {
                     name: "turn-end".to_string(),
                 },
             );
-            apply_osc_progress_signal(&s, "sess-1", &OscSignal::CommandExited { exit_code: Some(0) });
+            apply_osc_progress_signal(
+                &s,
+                "sess-1",
+                &OscSignal::CommandExited { exit_code: Some(0) },
+            );
             assert!(s.read().is_empty());
         }
 
