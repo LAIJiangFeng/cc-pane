@@ -292,29 +292,33 @@ export default function ProcessMonitorSection() {
           <div className="flex items-center gap-1 text-[var(--app-status-danger)] mb-1.5">
             <AlertTriangle className="w-3 h-3" />
             <span className="font-medium">
-              确定终止 {confirmAction === "selected" ? selectedPids.size : totalCount} 个进程？
+              {t("processMonitor.killConfirmTitle", {
+                count: confirmAction === "selected" ? selectedPids.size : totalCount,
+              })}
             </span>
           </div>
           <div className="text-[var(--app-text-tertiary)] mb-2">
-            总内存: {formatSize(confirmAction === "selected"
-              ? (scanResult?.processes ?? [])
-                  .filter((p) => selectedPids.has(p.pid))
-                  .reduce((sum, p) => sum + p.memoryBytes, 0)
-              : totalMemory
-            )}
+            {t("processMonitor.totalMemory", {
+              size: formatSize(confirmAction === "selected"
+                ? (scanResult?.processes ?? [])
+                    .filter((p) => selectedPids.has(p.pid))
+                    .reduce((sum, p) => sum + p.memoryBytes, 0)
+                : totalMemory
+              ),
+            })}
           </div>
           <div className="flex gap-1.5">
             <button
               onClick={handleConfirmKill}
               className="px-2 py-0.5 rounded bg-[color-mix(in_srgb,var(--app-status-danger)_80%,transparent)] text-white text-[10px] hover:bg-[var(--app-status-danger)] transition-colors"
             >
-              确认
+              {t("processMonitor.confirm")}
             </button>
             <button
               onClick={() => setConfirmAction(null)}
               className="px-2 py-0.5 rounded bg-[var(--app-hover)] text-[var(--app-text-secondary)] text-[10px] hover:bg-[var(--app-active)] transition-colors"
             >
-              取消
+              {t("processMonitor.cancel")}
             </button>
           </div>
         </div>
@@ -326,13 +330,13 @@ export default function ProcessMonitorSection() {
           {totalCount === 0 && !scanning && (
             <div className="flex items-center gap-1.5 px-2 py-2 text-[11px] text-[var(--app-text-tertiary)]">
               <Cpu className="w-3 h-3" />
-              <span>未发现 Claude 进程</span>
+              <span>{t("processMonitor.noProcesses")}</span>
             </div>
           )}
           {totalCount === 0 && scanning && (
             <div className="flex items-center gap-1.5 px-2 py-2 text-[11px] text-[var(--app-text-tertiary)]">
               <RefreshCw className="w-3 h-3 animate-spin" />
-              <span>扫描中…</span>
+              <span>{t("processMonitor.scanning")}</span>
             </div>
           )}
           {[...groups.entries()].map(([cwdPath, processes]) => (

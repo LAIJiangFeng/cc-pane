@@ -43,5 +43,7 @@
   "linkAlreadyState": "原本就是该状态",
   "linkSectionTitle": "中央仓库链接管理",
   "linkSectionDesc": "技能原件只存一份（中央仓库），启用 = 在各 Agent 目录创建链接；支持工作空间与远程更新。",
-  "operationFailed": "操作失败: {{error}}"
+  "operationFailed": "操作失败: {{error}}",
+  "addWorkspaceDuplicate": "该项目已在工作空间列表中",
+  "addWorkspaceAdded": "已添加项目工作空间【{{name}}】"
 }

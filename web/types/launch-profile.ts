@@ -1,3 +1,4 @@
+import i18n from "@/i18n";
 import type { Provider } from "./provider";
 import type { SkillDeliveryMode } from "./skill";
 import type { LaunchEffort, PiLaunchOptions } from "./terminal";
@@ -132,9 +133,13 @@ export interface LaunchProfileResolution {
 }
 
 export function defaultLaunchProfileDraft(provider?: Provider | null): LaunchProfileDraft {
+  // 默认名创建时取当前语言并作为数据持久化（与布局默认名同一策略）
+  const defaultName = provider
+    ? i18n.t("profileDefaultName", { ns: "providers", tool: provider.name })
+    : i18n.t("profileNewName", { ns: "providers" });
   return {
-    name: provider ? `${provider.name} 运行配置` : "新运行配置",
-    alias: provider ? `${provider.name} 运行配置` : "新运行配置",
+    name: defaultName,
+    alias: defaultName,
     description: "",
     providerId: provider?.id ?? null,
     modelId: null,

@@ -3,6 +3,7 @@
 // 从 usePanesStore.ts 拆出：该文件已触到行数棘轮上限（web/test/lineRatchet.test.ts）。
 // 这一组的共同点是「只认 layouts + 工作副本（rootPane/activePaneId/currentLayoutId）」，
 // 不碰具体窗格树的增删改，自成一层。
+import i18n from "@/i18n";
 import type {
   LayoutDraft,
   PaneNodeDraft,
@@ -76,10 +77,20 @@ export function activateFirstNormalLayout(state: PanesDraft): boolean {
 export function nextLayoutName(layouts: Array<Pick<LayoutEntry, "name">>): string {
   const used = new Set(layouts.map((layout) => layout.name.trim()));
   let index = layouts.length + 1;
-  while (used.has(`布局 ${index}`)) {
+  while (used.has(defaultLayoutName(index))) {
     index += 1;
   }
-  return `布局 ${index}`;
+  return defaultLayoutName(index);
+}
+
+/** 新布局默认名（"布局 2" / "Layout 2"）：创建时取当前语言并作为数据持久化。 */
+export function defaultLayoutName(index: number): string {
+  return i18n.t("panes:defaultLayoutName", { index });
+}
+
+/** 星标布局显示名（身份由 kind==="starred" 判定，与名字无关）。 */
+export function starredLayoutName(): string {
+  return i18n.t("panes:starredLayoutName");
 }
 
 /** 当前布局取工作副本，其余布局取自身 rootPane（工作副本只镜像当前布局） */

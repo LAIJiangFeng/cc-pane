@@ -305,7 +305,8 @@ describe("LaunchProfilesPanel external skills", () => {
       savedDraft = draft;
     });
 
-    await screen.findByText("External Skills");
+    // 标题走 i18n（providers:launchExternalSkills），zh 环境渲染「外部 Skills」
+    await screen.findByText("外部 Skills");
     await user.click(screen.getByRole("checkbox", { name: "Claude" }));
     const saveButtons = screen.getAllByRole("button", { name: new RegExp(tp("saveDefault")) });
     await user.click(saveButtons[saveButtons.length - 1]);

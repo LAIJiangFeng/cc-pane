@@ -254,6 +254,7 @@ export function SortableTodoListItem({
   dispatchSessionId,
   onOpenDispatchSession,
 }: SortableTodoListItemProps) {
+  const { t } = useTranslation("dialogs");
   const {
     attributes,
     listeners,
@@ -301,7 +302,7 @@ export function SortableTodoListItem({
           className="shrink-0 w-5 flex items-center justify-center cursor-grab opacity-0 group-hover/sortable:opacity-60 focus-visible:opacity-100 transition-opacity"
           {...attributes}
           {...listeners}
-          title="Drag to reorder"
+          title={t("dragToReorder")}
         >
           <GripVertical className="w-3 h-3 text-muted-foreground" />
         </button>

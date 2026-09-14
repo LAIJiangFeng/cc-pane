@@ -243,5 +243,8 @@
     "installedAndEnabled": "Installed and enabled {{name}}",
     "installSkillFailed": "Failed to install Skill: {{error}}",
     "profileSkillRequired": "The profile Skill's name and content can't be empty"
-  }
+  },
+  "launchSkillTitle": "Skill",
+  "launchExternalSkills": "External Skills",
+  "profileNewName": "New launch profile"
 }

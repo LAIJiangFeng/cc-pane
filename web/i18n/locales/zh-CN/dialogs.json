@@ -396,5 +396,7 @@
   "gitConflict.tooLarge": "文件过大（超过 2 MiB），无法在此编辑，请用外部工具处理后手动暂存该文件。",
   "gitConflict.missingSide": "该侧缺失（modify/delete 冲突）。",
   "gitConflict.loadError": "加载冲突失败：{{message}}",
-  "gitConflict.saveError": "保存失败：{{message}}"
+  "gitConflict.saveError": "保存失败：{{message}}",
+  "deleteWorktree": "删除 Worktree",
+  "dragToReorder": "拖动排序"
 }

@@ -396,5 +396,7 @@
   "gitConflict.tooLarge": "File too large to edit here (over 2 MiB). Resolve it with an external tool, then stage the file.",
   "gitConflict.missingSide": "This side is missing (modify/delete conflict).",
   "gitConflict.loadError": "Failed to load conflict: {{message}}",
-  "gitConflict.saveError": "Failed to save: {{message}}"
+  "gitConflict.saveError": "Failed to save: {{message}}",
+  "deleteWorktree": "Delete worktree",
+  "dragToReorder": "Drag to reorder"
 }

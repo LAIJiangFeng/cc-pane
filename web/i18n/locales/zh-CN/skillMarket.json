@@ -61,5 +61,19 @@
     "removed": "已卸载 {{name}}",
     "removeFailed": "卸载失败：{{error}}",
     "loadFailed": "加载技能目录失败：{{error}}"
-  }
+  },
+  "skillInstalled": "已安装 {{name}}",
+  "skillInstallFailed": "安装失败：{{error}}",
+  "skillRemoved": "已移除",
+  "deleteFailed": "删除失败：{{error}}",
+  "globalSkillsDesc": "管理 CC-Panes 全局 Skills：市场安装、已装用户 skill、以及各 CLI 已有的 skill（只读）。",
+  "installedUserSkills": "已安装 Skills",
+  "noUserSkills": "还没有安装用户 Skill，去下方市场装一个。",
+  "deleteBtn": "删除",
+  "noMarketSkills": "市场暂无条目（或未联网）。",
+  "externalSkills": "外部发现（只读）",
+  "noExternalSkills": "未在 ~/.claude、~/.codex、plugins 中发现 skill。",
+  "bundledSkills": "内置 CC-Panes Skills（会话挂载，只读）",
+  "noBundledSkills": "（内置 skill 列表不可用）",
+  "skillMarket": "Skill 市场"
 }

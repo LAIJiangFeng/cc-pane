@@ -537,5 +537,9 @@
   "doubleClickFullscreenHint": "Double-click to toggle fullscreen",
   "autoFitLayout": "Auto-fit layout",
   "resizeLayoutList": "Resize layout list",
-  "resizeLayoutListHeight": "Resize layout list height"
+  "resizeLayoutListHeight": "Resize layout list height",
+  "codexResumeCaptureExhausted": "Codex session id capture failed: the new resume id for this run was not recorded, so the next resume may fall back to an earlier conversation.",
+  "resumeLaunchFailed": "Session resume failed: the resume target may be invalid ({{cli}}). The original conversation could not be continued; relaunch or start a new session from that tab.",
+  "defaultLayoutName": "Layout {{index}}",
+  "starredLayoutName": "Starred"
 }

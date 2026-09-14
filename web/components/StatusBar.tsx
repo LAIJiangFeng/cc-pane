@@ -238,13 +238,11 @@ export default function StatusBar() {
                   }}
                 >
                   <LockKeyhole className="w-3 h-3" />
-                  只读模式
+                  {settingsT("readOnlyMode")}
                 </span>
               </TooltipTrigger>
               <TooltipContent side="top">
-                <p>
-                  远程只读模式已启用：当前来源只能查看，终端输入与文件改动被禁止
-                </p>
+                <p>{settingsT("readOnlyModeTooltip")}</p>
               </TooltipContent>
             </Tooltip>
           )}
@@ -256,13 +254,11 @@ export default function StatusBar() {
                 onClick={() => void handleLockWeb()}
               >
                 <LockKeyhole className="w-3 h-3" />
-                <span className="text-[10px] font-medium">锁定 Web</span>
+                <span className="text-[10px] font-medium">{settingsT("lockWeb")}</span>
               </button>
             </TooltipTrigger>
             <TooltipContent side="top">
-              <p>
-                {canLockWeb ? "锁定 Web 端" : "需要先启用账号密码并设置密码"}
-              </p>
+              <p>{canLockWeb ? settingsT("lockWebTooltip") : settingsT("lockWebDisabledTooltip")}</p>
             </TooltipContent>
           </Tooltip>
         </>

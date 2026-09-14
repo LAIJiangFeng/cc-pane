@@ -169,7 +169,11 @@ export function useWorkspaceActions({ onOpenTerminal }: UseWorkspaceActionsParam
       return;
     }
     try {
-      const selected = await open({ directory: true, multiple: false, title: "选择工作空间根目录" });
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: tSidebar("chooseWorkspaceRoot"),
+      });
       if (selected) {
         setNewWorkspacePath(selected);
       }

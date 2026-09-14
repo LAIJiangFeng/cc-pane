@@ -121,5 +121,14 @@
     "apply": "暂停提醒",
     "snoozedSessions": "已暂停提醒的会话",
     "cancel": "提前恢复"
+  },
+  "agentChat": {
+    "autoApprovedWith": "已自动放行 · {{title}}（{{kind}}）",
+    "autoApproved": "已自动放行（{{kind}}）",
+    "resumeFallbackNotice": "未能续接原对话上下文，已开启全新会话"
+  },
+  "errors": {
+    "notificationMissing": "通知不存在",
+    "sessionGoneForRespond": "会话已不存在，无法回传输入"
   }
 }

@@ -34,8 +34,8 @@ export interface ContextWindowPreset {
   labelKey: string;
   /** 上下文窗口 tokens；用户选中即写入 */
   tokens: number;
-  /** 对应一个或多个具体模型族（hover hint 用，可选） */
-  familyHint?: string;
+  /** 对应一个或多个具体模型族（hover hint 用，settings i18n key，可选） */
+  familyHintKey?: string;
 }
 
 export const CONTEXT_WINDOW_PRESETS: readonly ContextWindowPreset[] = [
@@ -46,20 +46,20 @@ export const CONTEXT_WINDOW_PRESETS: readonly ContextWindowPreset[] = [
   { size: "32k",  labelKey: CONTEXT_WINDOW_LABEL_KEYS["32k"],  tokens: 32_000 },
   // 当前主流档：Claude 4.x / GPT-4.1 / o3-o4 / GLM-4.6 默认弹窗常用值
   { size: "64k",  labelKey: CONTEXT_WINDOW_LABEL_KEYS["64k"],  tokens: 64_000 },
-  { size: "128k", labelKey: CONTEXT_WINDOW_LABEL_KEYS["128k"], tokens: 128_000, familyHint: "Kimi K2 / Mistral Large 2 / DeepSeek V3.2 / DeepSeek R1" },
-  { size: "200k", labelKey: CONTEXT_WINDOW_LABEL_KEYS["200k"], tokens: 200_000, familyHint: "Claude Opus / Sonnet / Haiku 4（默认）· o3 / o4 · GLM-4.6" },
+  { size: "128k", labelKey: CONTEXT_WINDOW_LABEL_KEYS["128k"], tokens: 128_000, familyHintKey: "providerContextWindowFamily.128k" },
+  { size: "200k", labelKey: CONTEXT_WINDOW_LABEL_KEYS["200k"], tokens: 200_000, familyHintKey: "providerContextWindowFamily.200k" },
   // 256K 档：Grok 4 / Qwen3 Max
-  { size: "256k", labelKey: CONTEXT_WINDOW_LABEL_KEYS["256k"], tokens: 256_000, familyHint: "Grok 4 · Qwen3 Max" },
+  { size: "256k", labelKey: CONTEXT_WINDOW_LABEL_KEYS["256k"], tokens: 256_000, familyHintKey: "providerContextWindowFamily.256k" },
   // GPT-5 默认独立档
-  { size: "400k", labelKey: CONTEXT_WINDOW_LABEL_KEYS["400k"], tokens: 400_000, familyHint: "GPT-5 默认" },
+  { size: "400k", labelKey: CONTEXT_WINDOW_LABEL_KEYS["400k"], tokens: 400_000, familyHintKey: "providerContextWindowFamily.400k" },
   // 500K 档
-  { size: "500k", labelKey: CONTEXT_WINDOW_LABEL_KEYS["500k"], tokens: 500_000, familyHint: "Mistral / Grok" },
+  { size: "500k", labelKey: CONTEXT_WINDOW_LABEL_KEYS["500k"], tokens: 500_000, familyHintKey: "providerContextWindowFamily.500k" },
   // 1M+ 高基数：Claude 4.5 enterprise / Gemini 2.5 / Grok 3 / Llama 4 Maverick / GPT-4.1
-  { size: "1m",   labelKey: CONTEXT_WINDOW_LABEL_KEYS["1m"],   tokens: 1_000_000, familyHint: "Claude Sonnet 4.5（1M beta）· Gemini 2.5 Pro/Flash · GPT-4.1 · Grok 3 · Llama 4 Maverick" },
+  { size: "1m",   labelKey: CONTEXT_WINDOW_LABEL_KEYS["1m"],   tokens: 1_000_000, familyHintKey: "providerContextWindowFamily.1m" },
   // 2M 极端扩展：Gemini 2.5 Pro 长上下文
-  { size: "2m",   labelKey: CONTEXT_WINDOW_LABEL_KEYS["2m"],   tokens: 2_000_000, familyHint: "Gemini 2.5 Pro 长上下文档" },
+  { size: "2m",   labelKey: CONTEXT_WINDOW_LABEL_KEYS["2m"],   tokens: 2_000_000, familyHintKey: "providerContextWindowFamily.2m" },
   // 10M 极端：Llama 4 Scout（卡到 MAX=10M 上限）
-  { size: "10m",  labelKey: CONTEXT_WINDOW_LABEL_KEYS["10m"],  tokens: 10_000_000, familyHint: "Llama 4 Scout（10M）" },
+  { size: "10m",  labelKey: CONTEXT_WINDOW_LABEL_KEYS["10m"],  tokens: 10_000_000, familyHintKey: "providerContextWindowFamily.10m" },
 ] as const;
 
 /** 从数值反查预设（用于 hydrated 模型行的下拉默认选中） */

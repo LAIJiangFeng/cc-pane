@@ -1,6 +1,7 @@
 import * as React from "react";
 import { Command as CommandPrimitive } from "cmdk";
 import { SearchIcon } from "lucide-react";
+import i18n from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
   Dialog,
@@ -28,7 +29,9 @@ interface CommandDialogProps extends React.ComponentProps<typeof Dialog> {
   children: React.ReactNode;
 }
 
-function CommandDialog({ title = "命令面板", children, ...props }: CommandDialogProps) {
+function CommandDialog({ title, children, ...props }: CommandDialogProps) {
+  // 默认标题在渲染时取当前语言（调用方显式传 title 时以调用方为准）
+  const resolvedTitle = title ?? i18n.t("command-palette", { ns: "shortcuts" });
   return (
     <Dialog {...props}>
       <DialogContent
@@ -36,8 +39,8 @@ function CommandDialog({ title = "命令面板", children, ...props }: CommandDi
         // 键盘唤起的高频面板：零动画（Raycast 式），出现/消失都即时
         className="overflow-hidden p-0 top-[20%] translate-y-0 max-w-[560px] border-[var(--app-border)] bg-[var(--app-overlay)] shadow-[var(--sh-lg)] data-[state=open]:animate-none data-[state=closed]:animate-none"
       >
-        <DialogTitle className="sr-only">{title}</DialogTitle>
-        <DialogDescription className="sr-only">{title}</DialogDescription>
+        <DialogTitle className="sr-only">{resolvedTitle}</DialogTitle>
+        <DialogDescription className="sr-only">{resolvedTitle}</DialogDescription>
         <Command
           shouldFilter
           className="[&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1.5 [&_[cmdk-group-heading]]:text-[10px] [&_[cmdk-group-heading]]:font-semibold [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-wider [&_[cmdk-group-heading]]:text-[var(--app-text-tertiary)]"

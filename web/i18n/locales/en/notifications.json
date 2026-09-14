@@ -121,5 +121,14 @@
     "apply": "Snooze session",
     "snoozedSessions": "Snoozed sessions",
     "cancel": "Resume alerts"
+  },
+  "agentChat": {
+    "autoApprovedWith": "Auto-approved · {{title}} ({{kind}})",
+    "autoApproved": "Auto-approved ({{kind}})",
+    "resumeFallbackNotice": "Could not resume the previous conversation; a new session was started"
+  },
+  "errors": {
+    "notificationMissing": "Notification not found",
+    "sessionGoneForRespond": "The session no longer exists; input cannot be delivered"
   }
 }

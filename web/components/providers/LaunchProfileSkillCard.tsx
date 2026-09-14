@@ -132,7 +132,7 @@ export default function LaunchProfileSkillCard({
 
   return (
             <Section
-              title="Skill"
+              title={t("launchSkillTitle")}
               description={t("sectionSkillDesc")}
               icon={<Sparkles size={16} />}
               headerActions={
@@ -197,7 +197,7 @@ export default function LaunchProfileSkillCard({
               {visibleExternalSkillGroups.length > 0 && (
                 <div className="mt-2">
                   <CollapsibleCheckGroup
-                    title="External Skills"
+                    title={t("launchExternalSkills")}
                     total={visibleExternalSkills.length}
                     enabledCount={externalSkillSelectedCount}
                     enabledNames={visibleExternalSkills.filter((skill) => isExternalSkillSelected(draft.skillPolicy, skill)).map((skill) => skill.name)}

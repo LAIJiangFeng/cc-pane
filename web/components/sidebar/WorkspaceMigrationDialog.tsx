@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { toast } from "sonner";
+import { useTranslation } from "react-i18next";
 import {
   ArrowRight,
   FolderOpen,
@@ -46,6 +47,7 @@ export default function WorkspaceMigrationDialog({
   onOpenChange,
   workspace,
 }: WorkspaceMigrationDialogProps) {
+  const { t } = useTranslation("sidebar");
   const reloadWorkspaces = useWorkspacesStore((state) => state.load);
   const platform = useMemo(() => detectAppPlatform(), []);
   const isWindows = platform === "windows";
@@ -113,7 +115,7 @@ export default function WorkspaceMigrationDialog({
 
   const handleBrowseLocalRoot = useCallback(async () => {
     if (!isTauriRuntime()) {
-      const selected = window.prompt("选择迁移目标目录", targetRoot);
+      const selected = window.prompt(t("workspaceMigration.chooseDirTitle"), targetRoot);
       if (selected) {
         setTargetRoot(selected);
       }
@@ -122,12 +124,12 @@ export default function WorkspaceMigrationDialog({
     const selected = await openDialog({
       directory: true,
       multiple: false,
-      title: "选择迁移目标目录",
+      title: t("workspaceMigration.chooseDirTitle"),
     });
     if (typeof selected === "string") {
       setTargetRoot(selected);
     }
-  }, [targetRoot]);
+  }, [targetRoot, t]);
 
   const handlePreview = useCallback(async () => {
     if (!currentRequest) return;
@@ -153,13 +155,13 @@ export default function WorkspaceMigrationDialog({
       setMigrationResult(result);
       setPreviewKey(currentRequestKey);
       await reloadWorkspaces();
-      toast.success("工作空间迁移完成，源目录没有删除。");
+      toast.success(t("workspaceMigration.done"));
     } catch (error) {
       toast.error(getErrorMessage(error));
     } finally {
       setLoading(null);
     }
-  }, [currentRequest, currentRequestKey, reloadWorkspaces]);
+  }, [currentRequest, currentRequestKey, reloadWorkspaces, t]);
 
   const handleRollback = useCallback(async () => {
     if (!workspace || !migrationResult) return;
@@ -168,13 +170,13 @@ export default function WorkspaceMigrationDialog({
       await rollbackWorkspaceMigration(workspace.name, migrationResult.snapshotId);
       await reloadWorkspaces();
       setMigrationResult(null);
-      toast.success("已回滚工作空间配置，目标副本没有删除。");
+      toast.success(t("workspaceMigration.rolledBack"));
     } catch (error) {
       toast.error(getErrorMessage(error));
     } finally {
       setLoading(null);
     }
-  }, [migrationResult, reloadWorkspaces, workspace]);
+  }, [migrationResult, reloadWorkspaces, t, workspace]);
 
   const canExecute =
     !!previewPlan &&
@@ -188,7 +190,7 @@ export default function WorkspaceMigrationDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-3xl">
         <DialogHeader>
-          <DialogTitle>迁移工作空间</DialogTitle>
+          <DialogTitle>{t("workspaceMigration.title")}</DialogTitle>
         </DialogHeader>
 
         {!workspace ? null : (
@@ -198,24 +200,24 @@ export default function WorkspaceMigrationDialog({
                 {workspace.alias || workspace.name}
               </div>
               <div className="mt-1 text-xs text-[var(--app-text-secondary)]">
-                源目录：{workspace.path || "未设置"}
+                {t("workspaceMigration.sourceDir")}：{workspace.path || t("workspaceMigration.notSet")}
               </div>
               <div className="mt-2 text-xs text-[var(--app-status-warning)]">
-                迁移流程固定为：预检 → 复制 → 校验 → 切换。整个过程不会删除 Windows 副本。
+                {t("workspaceMigration.flowHint")}
               </div>
             </div>
 
             <div className="grid gap-4 md:grid-cols-[180px_minmax(0,1fr)]">
               <div className="space-y-2">
                 <div className="text-xs font-medium text-[var(--app-text-secondary)]">
-                  目标环境
+                  {t("workspaceMigration.targetEnv")}
                 </div>
                 <button
                   className={targetButtonClass(targetKind === "local")}
                   onClick={() => setTargetKind("local")}
                   type="button"
                 >
-                  本机
+                  {t("workspaceMigration.local")}
                 </button>
                 {supportsWsl ? (
                   <button
@@ -232,7 +234,7 @@ export default function WorkspaceMigrationDialog({
                   disabled
                   type="button"
                 >
-                  SSH（后续支持）
+                  {t("workspaceMigration.sshLater")}
                 </button>
               </div>
 
@@ -240,7 +242,7 @@ export default function WorkspaceMigrationDialog({
                 {targetKind === "local" ? (
                   <div className="space-y-2">
                     <label className="text-xs font-medium text-[var(--app-text-secondary)]">
-                      目标目录
+                      {t("workspaceMigration.targetDir")}
                     </label>
                     <div className="flex gap-2">
                       <Input
@@ -250,7 +252,7 @@ export default function WorkspaceMigrationDialog({
                       />
                       <Button onClick={handleBrowseLocalRoot} type="button" variant="outline">
                         <FolderOpen className="h-4 w-4" />
-                        选择
+                        {t("workspaceMigration.choose")}
                       </Button>
                     </div>
                   </div>
@@ -261,7 +263,7 @@ export default function WorkspaceMigrationDialog({
                     <div className="space-y-2">
                       <div className="flex items-center justify-between gap-2">
                         <label className="text-xs font-medium text-[var(--app-text-secondary)]">
-                          WSL 发行版
+                          {t("workspaceMigration.wslDistro")}
                         </label>
                         <button
                           className="inline-flex items-center gap-1 text-xs text-[var(--app-text-secondary)] hover:text-[var(--app-accent)]"
@@ -269,7 +271,7 @@ export default function WorkspaceMigrationDialog({
                           type="button"
                         >
                           <RefreshCw className={`h-3.5 w-3.5 ${wslLoading ? "animate-spin" : ""}`} />
-                          刷新
+                          {t("workspaceMigration.refresh")}
                         </button>
                       </div>
                       <select
@@ -277,7 +279,7 @@ export default function WorkspaceMigrationDialog({
                         onChange={(event) => setTargetDistro(event.target.value)}
                         value={targetDistro}
                       >
-                        <option value="">使用系统默认发行版</option>
+                        <option value="">{t("workspaceMigration.wslDefaultDistro")}</option>
                         {wslDistros.map((distro) => (
                           <option key={distro.name} value={distro.name}>
                             {distro.name}
@@ -289,7 +291,7 @@ export default function WorkspaceMigrationDialog({
 
                     <div className="space-y-2">
                       <label className="text-xs font-medium text-[var(--app-text-secondary)]">
-                        WSL 目标根目录
+                        {t("workspaceMigration.wslRoot")}
                       </label>
                       <Input
                         value={targetRoot}
@@ -303,11 +305,11 @@ export default function WorkspaceMigrationDialog({
                 <div className="flex flex-wrap gap-2">
                   <Button onClick={handlePreview} type="button" variant="outline">
                     {loading === "preview" ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                    先预检
+                    {t("workspaceMigration.precheck")}
                   </Button>
                   <Button disabled={!canExecute} onClick={handleExecute} type="button">
                     {loading === "execute" ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                    执行迁移
+                    {t("workspaceMigration.run")}
                   </Button>
                   {migrationResult ? (
                     <Button
@@ -321,7 +323,7 @@ export default function WorkspaceMigrationDialog({
                       ) : (
                         <RotateCcw className="h-4 w-4" />
                       )}
-                      回滚配置
+                      {t("workspaceMigration.rollback")}
                     </Button>
                   ) : null}
                 </div>
@@ -332,7 +334,7 @@ export default function WorkspaceMigrationDialog({
               <div className="rounded-lg border border-[var(--app-border)]">
                 <div className="border-b border-[var(--app-border)] px-4 py-3">
                   <div className="text-sm font-medium text-[var(--app-text-primary)]">
-                    迁移预览
+                    {t("workspaceMigration.preview")}
                   </div>
                   <div className="mt-1 text-xs text-[var(--app-text-secondary)]">
                     {previewPlan.sourceRoot}
@@ -344,7 +346,7 @@ export default function WorkspaceMigrationDialog({
                 <div className="max-h-72 space-y-2 overflow-y-auto px-4 py-3">
                   {previewPlan.items.length === 0 ? (
                     <div className="text-sm text-[var(--app-text-secondary)]">
-                      当前没有可迁移的本地项目，仍会复制工作空间根目录。
+                      {t("workspaceMigration.noProjectsHint")}
                     </div>
                   ) : (
                     previewPlan.items.map((item) => (
@@ -386,12 +388,16 @@ export default function WorkspaceMigrationDialog({
 
             {migrationResult ? (
               <div className="rounded-lg border border-[color-mix(in_srgb,var(--app-status-success)_30%,transparent)] bg-[var(--app-status-success-bg)] px-4 py-3 text-sm text-[var(--app-status-success)]">
-                <div>已完成切换，默认环境已更新。</div>
+                <div>{t("workspaceMigration.switched")}</div>
                 <div className="mt-1 text-xs">
-                  复制文件：{migrationResult.copiedFiles}，复制体积：
-                  {formatSize(migrationResult.copiedBytes)}
+                  {t("workspaceMigration.copiedSummary", {
+                    files: migrationResult.copiedFiles,
+                    size: formatSize(migrationResult.copiedBytes),
+                  })}
                 </div>
-                <div className="mt-1 text-xs">快照 ID：{migrationResult.snapshotId}</div>
+                <div className="mt-1 text-xs">
+                  {t("workspaceMigration.snapshotId", { id: migrationResult.snapshotId })}
+                </div>
               </div>
             ) : null}
           </div>
@@ -399,7 +405,7 @@ export default function WorkspaceMigrationDialog({
 
         <DialogFooter>
           <Button onClick={() => onOpenChange(false)} type="button" variant="secondary">
-            关闭
+            {t("workspaceMigration.close")}
           </Button>
         </DialogFooter>
       </DialogContent>

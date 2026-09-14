@@ -1122,5 +1122,28 @@
   "performanceIncidentMarked": "已标记当前时间，正在保存运行状态。",
   "providerCodexWireApi": "Codex Wire API",
   "providerWireApiResponses": "responses（官方 OpenAI / 主流中转）",
-  "providerWireApiChat": "chat（仅支持 /chat/completions 的中转）"
+  "providerWireApiChat": "chat（仅支持 /chat/completions 的中转）",
+  "updaterAlreadyUpToDate": "当前已是最新版本。",
+  "updaterCheckFailed": "检查更新失败：{{message}}",
+  "updaterFoundTitle": "发现新版本",
+  "updaterFoundBody": "发现新版本 {{version}}，是否立即下载并安装？",
+  "updaterBusyWarning": "⚠ 当前有会话正在运行，安装会中断它们。",
+  "updaterInstallNow": "立即更新",
+  "updaterLater": "稍后",
+  "readOnlyMode": "只读模式",
+  "readOnlyModeTooltip": "远程只读模式已启用：当前来源只能查看，终端输入与文件改动被禁止",
+  "lockWeb": "锁定 Web",
+  "lockWebTooltip": "锁定 Web 端",
+  "lockWebDisabledTooltip": "需要先启用账号密码并设置密码",
+  "voiceApiKeyPlaceholderHint": "sk-... / 留空",
+  "providerContextWindowFamily": {
+    "128k": "Kimi K2 / Mistral Large 2 / DeepSeek V3.2 / DeepSeek R1",
+    "200k": "Claude Opus / Sonnet / Haiku 4（默认）· o3 / o4 · GLM-4.6",
+    "256k": "Grok 4 · Qwen3 Max",
+    "400k": "GPT-5 默认",
+    "500k": "Mistral / Grok",
+    "1m": "Claude Sonnet 4.5（1M beta）· Gemini 2.5 Pro/Flash · GPT-4.1 · Grok 3 · Llama 4 Maverick",
+    "2m": "Gemini 2.5 Pro 长上下文档",
+    "10m": "Llama 4 Scout（10M）"
+  }
 }

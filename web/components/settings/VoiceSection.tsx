@@ -153,7 +153,9 @@ export default function VoiceSection({ value, onChange }: VoiceSectionProps) {
             type="password"
             value={value[capability.apiKeyField]}
             onChange={(event) => update(capability.apiKeyField, event.target.value)}
-            placeholder={capability.apiKeyPlaceholder}
+            placeholder={
+              capability.apiKeyPlaceholderKey ? t(capability.apiKeyPlaceholderKey) : capability.apiKeyPlaceholder
+            }
           />
         )}
       </FormField>
