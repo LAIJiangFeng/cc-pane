@@ -36,7 +36,7 @@ export default function ProviderToolTabs({ activeTab, onTabChange, providerCount
     <div
       role="tablist"
       aria-label={t("cliToolSelect")}
-      className="flex shrink-0 items-center gap-0.5"
+      className="flex max-w-full shrink-0 flex-wrap items-center gap-0.5"
     >
       {CLI_TOOL_TABS.map((tab) => {
         const installed = getToolById(tab.id)?.installed ?? false;

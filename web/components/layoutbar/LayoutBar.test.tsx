@@ -341,4 +341,21 @@ describe("LayoutBar", () => {
     // jsdom 里 offsetHeight/scrollHeight 为 0；旧逻辑会把 next 卡在 content=0 再写成 null。
     expect(usePanelPreferencesStore.getState().layoutHeight).toBeGreaterThanOrEqual(160);
   });
+
+  it("关闭正在拉伸的布局列表时清理拖动状态且不提交高度", async () => {
+    const user = userEvent.setup();
+    usePanelPreferencesStore.setState({ layoutHeight: null });
+    const previousCursor = document.body.style.cursor;
+    const previousSelection = document.body.style.userSelect;
+    const view = render(<LayoutBar />);
+    await user.hover(screen.getByRole("button", { name: /布局|Layout/i }));
+    const handle = await screen.findByRole("separator", { name: /调整布局列表高度|Resize layout list height/i });
+    fireEvent.pointerDown(handle, { button: 0, clientY: 200 });
+    fireEvent.pointerMove(document, { clientY: 360 });
+    view.unmount();
+    expect(document.body.style.cursor).toBe(previousCursor);
+    expect(document.body.style.userSelect).toBe(previousSelection);
+    fireEvent.pointerUp(document);
+    expect(usePanelPreferencesStore.getState().layoutHeight).toBeNull();
+  });
 });

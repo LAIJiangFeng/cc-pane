@@ -4,6 +4,27 @@
 > file. Add the entry to both — a missing Chinese entry fails `validate-version` before any build
 > starts.
 
+## 0.12.20 - 2026-09-16
+
+Complete the pending product changes and reconcile them with the published stability fixes.
+
+### Added
+
+- Place Automations beside Starred and layout presets beneath Agent Chat. The lower row uses icon buttons with tooltips in both comfortable and compact layouts.
+- Show CLI brand icons, provider counts and installation status directly in provider settings, with wrapping for narrow panels.
+- Import supported provider credentials from the local cc-switch database on demand. Preserve existing credentials and defaults, skip duplicates, report unsupported and unresolved entries, and commit the batch atomically.
+
+### Fixed
+
+- Let the corner layout list grow beyond its content height while respecting the window and maximum height.
+- Preserve Codex's selected endpoint, model and wire API during import; support OpenCode's OpenAI-compatible options without reinterpreting other protocols.
+- Include the development fixes for direct Codex startup in its working directory, incomplete escape replay, stalled terminal display recovery, Kitty keyboard negotiation and WebAssembly CSP.
+- Retain the bottom-right MCP notification and terminal replay fixes shipped in 0.12.18–0.12.19.
+
+### Maintenance
+
+- Commit and reconcile the previously uncommitted source and review documents. Keep machine-local session archives, diagnostic output and build overrides outside version control.
+
 ## 0.12.19 - 2026-09-15
 
 Restore the MCP startup notification change omitted from the 0.12.18 release.
@@ -45,15 +66,6 @@ Terminal recovery and input stability, alongside the completed quick terminal, G
 - Visual fixtures cover box drawing, block characters, Powerline, CJK alignment and color gradients. Release checks require all platforms and valid updater signatures.
 - Inline images remain disabled by default and are not restored with hibernated text; Windows ConPTY uses OSC 1337.
 - Jcode history, hooks and orchestrated launch remain unavailable; pi/omp/jcode MCP injection in this release covers local terminals.
-
-### Fixed
-
-- Corner layout picker can be dragged taller than its content. The bottom handle used to stop at the list's scroll height, so a full list would not grow.
-- IME composition recovery no longer force-fits and fully refreshes the terminal when cols/rows are unchanged. Selecting a pinyin candidate was hitching the next keystroke with a delayed WebGL refresh.
-- Pinyin input no longer waits 150ms with layout locked after each committed character, and DEV no longer sends every IME keystroke through Tauri `plugin-log` IPC. Opt in to per-key tracing with `localStorage.setItem("cc-panes:trace-terminal-input", "1")`.
-- Windows WebView2 IME: the xterm helper textarea is no longer `opacity:0` / off-screen / zero-sized. TSF was hitching Sogou and Microsoft Pinyin on that control. After a 选字 with no pending resize, recovery also skips `proposeDimensions` (forced reflow).
-- After committing a pinyin candidate, the composition preview stays until the PTY echo paints, and that write skips the 8ms keyboard batch so ConPTY sees the glyph on the same turn.
-- WebGL no longer full-refreshes every pane when the shared glyph atlas merely grows a new same-size page. Claude truecolor used to fill pages constantly; only `_mergePages` (glyph UVs actually move) still busts the skip cache.
 
 ## 0.12.17 - 2026-09-12
 

@@ -88,7 +88,6 @@ describe("ProvidersView", () => {
     render(<ProvidersView />);
 
     expect(screen.getByText(/^(Providers|服务商|供应商)$/i)).toBeVisible();
-    const user = userEvent.setup();
     const list = await screen.findByRole("tablist", { name: /选择 CLI|Select CLI/i });
     expect(list).toBeVisible();
     expect(within(list).getByRole("tab", { name: /Claude/ })).toBeVisible();

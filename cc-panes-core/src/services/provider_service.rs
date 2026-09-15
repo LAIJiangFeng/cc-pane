@@ -404,18 +404,19 @@ impl ProviderService {
             anyhow::bail!("cc-switch database not found");
         }
 
-        let candidates = load_cc_switch_providers(&path)?;
-        let mut report = CcSwitchImportReport::default();
-        if candidates.is_empty() {
+        let batch = load_cc_switch_providers(&path)?;
+        let mut report = CcSwitchImportReport {
+            skipped_empty: batch.skipped_empty,
+            skipped_unsupported: batch.skipped_unsupported,
+            ..CcSwitchImportReport::default()
+        };
+        if batch.candidates.is_empty() {
             return Ok(report);
         }
 
         let mut config = self.lock_latest_config();
         let mut next = config.clone();
-        for candidate in candidates {
-            if next.providers.len() >= MAX_PROVIDER_COUNT {
-                anyhow::bail!("providers config exceeds {MAX_PROVIDER_COUNT} entries");
-            }
+        for candidate in batch.candidates {
             let mut provider = candidate_to_provider(&candidate);
             Self::normalize_provider_models(&mut provider)?;
             Self::validate_provider(&provider)?;
@@ -426,6 +427,9 @@ impl ProviderService {
             }) {
                 report.skipped_duplicate += 1;
                 continue;
+            }
+            if next.providers.len() >= MAX_PROVIDER_COUNT {
+                anyhow::bail!("providers config exceeds {MAX_PROVIDER_COUNT} entries");
             }
             provider.is_default = false;
             next.providers.push(provider);
@@ -1380,6 +1384,7 @@ mod tests {
         let report = service.import_cc_switch_providers(Some(&db_path)).unwrap();
         assert_eq!(report.imported, 1);
         assert_eq!(report.skipped_duplicate, 1);
+        assert_eq!(report.skipped_unsupported, 1);
 
         let names: Vec<_> = service
             .list_providers()
@@ -1409,6 +1414,73 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("not found"));
+    }
+
+    #[test]
+    fn import_cc_switch_duplicates_at_capacity_is_a_noop() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = new_service(&dir);
+        let mut current = service.lock_latest_config();
+        let mut next = current.clone();
+        next.providers = (0..MAX_PROVIDER_COUNT)
+            .map(|i| make_provider(&format!("existing-{i}"), false))
+            .collect();
+        service.commit_config(&mut current, next).unwrap();
+        drop(current);
+        let before = std::fs::read(dir.path().join("providers.json")).unwrap();
+        let source = dir.path().join("cc-switch.db");
+        write_cc_switch_db(
+            &source,
+            &[(
+                "one",
+                "claude",
+                "Provider existing-0",
+                serde_json::json!({"env":{"ANTHROPIC_API_KEY":"different-key","ANTHROPIC_BASE_URL":"https://api.example.com"}}),
+            )],
+        );
+        let report = service.import_cc_switch_providers(Some(&source)).unwrap();
+        assert_eq!(report.imported, 0);
+        assert_eq!(report.skipped_duplicate, 1);
+        assert_eq!(
+            std::fs::read(dir.path().join("providers.json")).unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn import_cc_switch_invalid_later_row_does_not_commit_partial_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = new_service(&dir);
+        service
+            .add_provider(make_provider("existing", true))
+            .unwrap();
+        let before = std::fs::read(dir.path().join("providers.json")).unwrap();
+        let source = dir.path().join("cc-switch.db");
+        write_cc_switch_db(
+            &source,
+            &[
+                (
+                    "valid",
+                    "claude",
+                    "Valid",
+                    serde_json::json!({"env":{"ANTHROPIC_API_KEY":"test-key"}}),
+                ),
+                (
+                    "invalid",
+                    "claude",
+                    "Invalid",
+                    serde_json::json!({"env":{"ANTHROPIC_BASE_URL":"file:///invalid"}}),
+                ),
+            ],
+        );
+        let source_before = std::fs::read(&source).unwrap();
+        assert!(service.import_cc_switch_providers(Some(&source)).is_err());
+        assert_eq!(service.list_providers().len(), 1);
+        assert_eq!(
+            std::fs::read(dir.path().join("providers.json")).unwrap(),
+            before
+        );
+        assert_eq!(std::fs::read(&source).unwrap(), source_before);
     }
 
     #[test]

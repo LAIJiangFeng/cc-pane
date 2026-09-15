@@ -72,10 +72,16 @@ pub fn detect_system_provider(
 
 /// 从本机 `~/.cc-switch/cc-switch.db` 抄入供应商（去重，不改默认）。
 #[tauri::command]
-pub fn import_cc_switch_providers(
+pub async fn import_cc_switch_providers(
     service: State<'_, Arc<ProviderService>>,
 ) -> AppResult<CcSwitchImportReport> {
-    Ok(service.import_cc_switch_providers(None)?)
+    let service = Arc::clone(service.inner());
+    tauri::async_runtime::spawn_blocking(move || service.import_cc_switch_providers(None))
+        .await
+        .map_err(|error| {
+            crate::utils::AppError::from(format!("Provider import task failed: {error}"))
+        })?
+        .map_err(Into::into)
 }
 
 /// 配置目录信息

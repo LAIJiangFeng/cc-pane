@@ -25,6 +25,14 @@ pub struct CcSwitchImportCandidate {
     pub api_key: Option<String>,
     pub base_url: Option<String>,
     pub default_model_id: Option<String>,
+    pub codex_wire_api: Option<String>,
+}
+
+#[derive(Debug, Default)]
+pub struct CcSwitchImportBatch {
+    pub candidates: Vec<CcSwitchImportCandidate>,
+    pub skipped_empty: usize,
+    pub skipped_unsupported: usize,
 }
 
 pub fn cc_switch_db_path() -> Option<PathBuf> {
@@ -37,7 +45,7 @@ pub fn cc_switch_db_path() -> Option<PathBuf> {
     })
 }
 
-pub fn load_cc_switch_providers(db_path: &Path) -> Result<Vec<CcSwitchImportCandidate>> {
+pub fn load_cc_switch_providers(db_path: &Path) -> Result<CcSwitchImportBatch> {
     let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .with_context(|| format!("failed to open {}", db_path.display()))?;
     let mut stmt = conn
@@ -53,13 +61,32 @@ pub fn load_cc_switch_providers(db_path: &Path) -> Result<Vec<CcSwitchImportCand
         })
         .context("failed to query cc-switch providers")?;
 
-    let mut out = Vec::new();
+    let mut out = CcSwitchImportBatch::default();
     for row in rows {
         let (app_type, name, settings_raw) =
             row.context("failed to read cc-switch provider row")?;
-        let settings: Value = serde_json::from_str(&settings_raw).unwrap_or(Value::Null);
+        if provider_type_for_app(&app_type).is_none() {
+            out.skipped_unsupported += 1;
+            continue;
+        }
+        // Do not echo source configuration in errors: it can contain credentials.
+        let settings: Value = serde_json::from_str(&settings_raw)
+            .map_err(|_| anyhow::anyhow!("cc-switch provider configuration is not valid JSON"))?;
+        if !supported_settings(&app_type, &settings) {
+            out.skipped_unsupported += 1;
+            continue;
+        }
+        if app_type.trim().eq_ignore_ascii_case("codex") {
+            if let Some(config) = settings.get("config").and_then(Value::as_str) {
+                config.parse::<toml::Value>().map_err(|_| {
+                    anyhow::anyhow!("cc-switch Codex configuration is not valid TOML")
+                })?;
+            }
+        }
         if let Some(candidate) = map_cc_switch_row(&app_type, &name, &settings) {
-            out.push(candidate);
+            out.candidates.push(candidate);
+        } else {
+            out.skipped_empty += 1;
         }
     }
     Ok(out)
@@ -70,16 +97,33 @@ pub fn map_cc_switch_row(
     name: &str,
     settings: &Value,
 ) -> Option<CcSwitchImportCandidate> {
+    if !supported_settings(app_type, settings) {
+        return None;
+    }
     let provider_type = provider_type_for_app(app_type)?;
     let name = name.trim();
     if name.is_empty() {
         return None;
     }
-    let api_key = first_nonempty(settings, key_names(provider_type));
+    let mut api_key = first_nonempty(settings, key_names(provider_type));
     let mut base_url = first_nonempty(settings, url_names(provider_type));
-    if base_url.is_none() {
+    let mut default_model_id =
+        first_nonempty(settings, &["ANTHROPIC_MODEL", "OPENAI_MODEL", "model"]);
+    let mut codex_wire_api = None;
+    if provider_type == ProviderType::OpenAI {
         if let Some(config) = settings.get("config").and_then(Value::as_str) {
-            base_url = toml_base_url(config);
+            let config = config.parse::<toml::Value>().ok()?;
+            let provider = selected_codex_provider(&config)?;
+            base_url = base_url.or_else(|| toml_string(provider, "base_url"));
+            api_key = api_key.or_else(|| toml_string(provider, "experimental_bearer_token"));
+            default_model_id = default_model_id.or_else(|| toml_string(&config, "model"));
+            codex_wire_api = toml_string(provider, "wire_api");
+        }
+    }
+    if provider_type == ProviderType::OpenCode {
+        if let Some(options) = settings.get("options") {
+            api_key = api_key.or_else(|| first_nonempty(options, &["apiKey"]));
+            base_url = base_url.or_else(|| first_nonempty(options, &["baseURL"]));
         }
     }
     if api_key.is_none() && base_url.is_none() {
@@ -90,7 +134,8 @@ pub fn map_cc_switch_row(
         provider_type,
         api_key,
         base_url,
-        default_model_id: first_nonempty(settings, &["ANTHROPIC_MODEL", "OPENAI_MODEL", "model"]),
+        default_model_id,
+        codex_wire_api,
     })
 }
 
@@ -120,7 +165,7 @@ pub fn candidate_to_provider(candidate: &CcSwitchImportCandidate) -> Provider {
         config_dir: None,
         models,
         default_model_id: candidate.default_model_id.clone(),
-        codex_wire_api: None,
+        codex_wire_api: candidate.codex_wire_api.clone(),
         is_default: false,
     }
 }
@@ -133,6 +178,16 @@ fn provider_type_for_app(app_type: &str) -> Option<ProviderType> {
         "opencode" => ProviderType::OpenCode,
         _ => return None,
     })
+}
+
+fn supported_settings(app_type: &str, settings: &Value) -> bool {
+    // CC-Panes' OpenCode provider currently injects OpenAI-compatible options.
+    // Do not silently reinterpret Anthropic/Bedrock/Google credentials as OpenAI.
+    !app_type.trim().eq_ignore_ascii_case("opencode")
+        || settings
+            .get("npm")
+            .and_then(Value::as_str)
+            .is_none_or(|npm| matches!(npm, "@ai-sdk/openai" | "@ai-sdk/openai-compatible"))
 }
 
 fn key_names(provider_type: ProviderType) -> &'static [&'static str] {
@@ -190,34 +245,29 @@ fn lookup_setting(settings: &Value, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-fn toml_base_url(config: &str) -> Option<String> {
-    for line in config.lines() {
-        let line = line.trim();
-        let Some(rest) = line.strip_prefix("base_url") else {
-            continue;
-        };
-        let Some(rest) = rest.trim_start().strip_prefix('=') else {
-            continue;
-        };
-        if let Some(value) = unquote(rest.trim_start()).filter(|value| !value.is_empty()) {
-            return Some(value);
-        }
-    }
-    None
+fn toml_string(value: &toml::Value, key: &str) -> Option<String> {
+    value
+        .get(key)?
+        .as_str()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
 }
 
-fn unquote(value: &str) -> Option<String> {
-    let value = value.trim().trim_end_matches(',').trim();
-    if let Some(inner) = value.strip_prefix('"').and_then(|v| v.strip_suffix('"')) {
-        return Some(inner.to_string());
+fn selected_codex_provider(config: &toml::Value) -> Option<&toml::Value> {
+    let providers = config
+        .get("model_providers")
+        .and_then(toml::Value::as_table);
+    if let Some(selected) = config.get("model_provider").and_then(toml::Value::as_str) {
+        return providers.and_then(|items| items.get(selected)).or_else(|| {
+            // OpenAI is a built-in provider and need not have a custom table.
+            (selected == "openai").then_some(config)
+        });
     }
-    if let Some(inner) = value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')) {
-        return Some(inner.to_string());
-    }
-    if value.is_empty() {
-        None
-    } else {
-        Some(value.to_string())
+    match providers {
+        Some(items) if items.len() == 1 => items.values().next(),
+        Some(items) if !items.is_empty() => None,
+        _ => Some(config),
     }
 }
 
@@ -290,6 +340,7 @@ mod tests {
         .unwrap();
         assert_eq!(row.provider_type, ProviderType::OpenAI);
         assert_eq!(row.api_key.as_deref(), Some("sk-codex"));
+        assert_eq!(row.default_model_id.as_deref(), Some("gpt-5"));
         assert_eq!(
             row.base_url.as_deref(),
             Some("https://codex.example.com/v1")
@@ -320,6 +371,39 @@ mod tests {
         .unwrap();
         assert_eq!(opencode.provider_type, ProviderType::OpenCode);
         assert_eq!(opencode.api_key.as_deref(), Some("oc-key"));
+    }
+
+    #[test]
+    fn codex_uses_selected_table_and_preserves_model_and_wire_api() {
+        let settings = json!({
+            "auth": {"OPENAI_API_KEY": "test-key"},
+            "config": "model_provider = 'selected'\nmodel = 'test-model'\n[model_providers.other]\nbase_url = 'https://wrong.example'\n[model_providers.selected]\nbase_url = 'https://selected.example/v1' # comment\nwire_api = 'responses'\n"
+        });
+        let row = map_cc_switch_row("codex", "Selected", &settings).unwrap();
+        assert_eq!(row.base_url.as_deref(), Some("https://selected.example/v1"));
+        assert_eq!(row.default_model_id.as_deref(), Some("test-model"));
+        assert_eq!(
+            candidate_to_provider(&row).codex_wire_api.as_deref(),
+            Some("responses")
+        );
+    }
+
+    #[test]
+    fn codex_does_not_guess_between_ambiguous_provider_tables() {
+        let settings = json!({"auth":{"OPENAI_API_KEY":"test-key"},
+            "config":"[model_providers.a]\nbase_url='https://a.example'\n[model_providers.b]\nbase_url='https://b.example'"});
+        assert!(map_cc_switch_row("codex", "Ambiguous", &settings).is_none());
+    }
+
+    #[test]
+    fn maps_opencode_options_and_skips_incompatible_protocols() {
+        let mut settings = json!({"npm":"@ai-sdk/openai-compatible",
+            "options":{"apiKey":"test-key","baseURL":"https://example.test/v1"}});
+        let row = map_cc_switch_row("opencode", "Compatible", &settings).unwrap();
+        assert_eq!(row.api_key.as_deref(), Some("test-key"));
+        assert_eq!(row.base_url.as_deref(), Some("https://example.test/v1"));
+        settings["npm"] = json!("@ai-sdk/anthropic");
+        assert!(map_cc_switch_row("opencode", "Different protocol", &settings).is_none());
     }
 
     #[test]
@@ -372,8 +456,9 @@ mod tests {
         .unwrap();
 
         let loaded = load_cc_switch_providers(&db_path).unwrap();
-        assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded[0].name, "Copied");
-        assert_eq!(loaded[0].api_key.as_deref(), Some("sk-1"));
+        assert_eq!(loaded.candidates.len(), 1);
+        assert_eq!(loaded.skipped_unsupported, 1);
+        assert_eq!(loaded.candidates[0].name, "Copied");
+        assert_eq!(loaded.candidates[0].api_key.as_deref(), Some("sk-1"));
     }
 }

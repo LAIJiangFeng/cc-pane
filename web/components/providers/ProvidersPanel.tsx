@@ -203,10 +203,12 @@ export default function ProvidersPanel({ compact, view: fixedTopView, onDirtyCha
     setImportingCcSwitch(true);
     try {
       const report = await importCcSwitchProviders();
-      if (report.imported > 0) {
+      if (report.imported > 0 || report.skippedEmpty > 0 || report.skippedUnsupported > 0) {
         toastOk(t("ccSwitchImportOk", {
           imported: report.imported,
           skipped: report.skippedDuplicate,
+          empty: report.skippedEmpty,
+          unsupported: report.skippedUnsupported,
         }));
       } else if (report.skippedDuplicate > 0) {
         toastOk(t("ccSwitchImportDuplicatesOnly"));

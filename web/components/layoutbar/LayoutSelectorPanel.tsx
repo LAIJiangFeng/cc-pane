@@ -89,12 +89,15 @@ export function LayoutSelectorPanel({
   const setHeight = usePanelPreferencesStore(s => s.setLayoutHeight);
   const resize = usePanelResize({ element: floatingRef, width, min: 288, max: 720, onCommit: setWidth });
   const listRef = useRef<HTMLDivElement | null>(null);
+  const heightResizeCleanup = useRef<(() => void) | null>(null);
+  useEffect(() => () => heightResizeCleanup.current?.(), []);
 
   // 纵向拉伸：顶边不动，下缘跟随光标。可拉过内容高度（底下留白），上限是
   // LIST_HEIGHT_MAX 与窗口底，下限 LIST_HEIGHT_MIN。以前卡在 scrollHeight 上，
   // 列表已经撑满时往下拖完全不动。
   const startHeightResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
+    heightResizeCleanup.current?.();
     event.preventDefault(); event.stopPropagation();
     const list = listRef.current, panel = floatingRef.current;
     if (!list || !panel) return;
@@ -113,7 +116,11 @@ export function LayoutSelectorPanel({
       cancelAnimationFrame(frame); frame = requestAnimationFrame(applyPreview);
     };
     const clearPreview = () => { list.style.height = ""; list.style.maxHeight = ""; };
+    let finished = false;
     const finish = (cancelled: boolean) => {
+      if (finished) return;
+      finished = true;
+      heightResizeCleanup.current = null;
       cancelAnimationFrame(frame);
       document.removeEventListener("pointermove", move);
       document.removeEventListener("pointerup", up);
@@ -130,6 +137,7 @@ export function LayoutSelectorPanel({
       setHeight(next);
     };
     const up = () => finish(false), cancel = () => finish(true);
+    heightResizeCleanup.current = cancel;
     setDragging(true);
     document.body.style.cursor = "row-resize"; document.body.style.userSelect = "none";
     document.addEventListener("pointermove", move); document.addEventListener("pointerup", up);
