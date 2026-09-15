@@ -92,6 +92,8 @@ class SshPolicy(paramiko.ServerInterface):
 class SshHandler(socketserver.BaseRequestHandler):
     def handle(self):
         transport = paramiko.Transport(self.request)
+        # This fixture has no DH modulus database; advertise a fixed-group KEX.
+        transport.get_security_options().kex = ("diffie-hellman-group14-sha256",)
         policy = SshPolicy()
         transport.add_server_key(host_key)
         try:

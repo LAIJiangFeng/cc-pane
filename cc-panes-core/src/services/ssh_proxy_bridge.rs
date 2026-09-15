@@ -20,20 +20,17 @@
 use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use ssh2::Session;
-use std::io::{self, ErrorKind, Read, Write};
+use std::io::{Read, Write};
 use std::net::{IpAddr, TcpListener, TcpStream};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
+use super::ssh_relay::{pump_bidirectional, ChannelIo};
 use crate::models::{SshProxyConfig, SshProxyKind};
 
 /// 与直连路径保持一致的握手超时；协商完成后 socket 交给 ssh2 管理。
 pub(crate) const BRIDGE_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const RELAY_POLL_INTERVAL: Duration = Duration::from_millis(1);
-/// 中继写出长时间无法推进（对端不收）时的放弃阈值，避免线程永久卡死。
-const RELAY_WRITE_TIMEOUT: Duration = Duration::from_secs(60);
 const RELAY_SESSION_TIMEOUT_MS: u32 = 15_000;
-const RELAY_BUFFER_SIZE: usize = 16 * 1024;
 const MAX_HTTP_RESPONSE_HEADERS: usize = 16 * 1024;
 
 const SOCKS5_VERSION: u8 = 0x05;
@@ -121,7 +118,7 @@ pub(crate) fn establish_jump_tunnel(
         .with_context(|| {
             format!("Failed to open jump-host forward to {target_host}:{target_port}")
         })?;
-    let stream = channel.stream(0);
+    let mut stream = ChannelIo::new(&channel);
 
     let (session_side, mut relay_side) = create_loopback_pair()?;
     relay_side
@@ -131,10 +128,12 @@ pub(crate) fn establish_jump_tunnel(
     jump_session.set_blocking(false);
 
     thread::spawn(move || {
-        let outcome = pump_bidirectional(&mut relay_side, &mut stream.clone());
+        let outcome = pump_bidirectional(&mut relay_side, &mut stream);
         if let Err(error) = outcome {
             tracing::debug!(%error, "SSH jump-host relay stopped");
         }
+        // Release the caller before bounded channel cleanup.
+        let _ = relay_side.shutdown(std::net::Shutdown::Both);
         // 切回阻塞模式再关闭：非阻塞下 libssh2 返回 EAGAIN，
         // channel 释放会被忽略从而泄漏远端转发。
         jump_session.set_blocking(true);
@@ -160,71 +159,6 @@ fn create_loopback_pair() -> Result<(TcpStream, TcpStream)> {
         .context("Failed to accept the loopback relay connection")?;
     drop(listener);
     Ok((session_side, relay_side))
-}
-
-/// 单线程双向搬运，两端都必须是非阻塞的。任一端 EOF 即视为隧道结束。
-fn pump_bidirectional<A, B>(local: &mut A, remote: &mut B) -> io::Result<()>
-where
-    A: Read + Write,
-    B: Read + Write,
-{
-    let mut upstream = [0_u8; RELAY_BUFFER_SIZE];
-    let mut downstream = [0_u8; RELAY_BUFFER_SIZE];
-    let mut local_open = true;
-    let mut remote_open = true;
-
-    while local_open && remote_open {
-        let mut progressed = false;
-
-        match local.read(&mut upstream) {
-            Ok(0) => local_open = false,
-            Ok(count) => {
-                write_all_nonblocking(remote, &upstream[..count])?;
-                progressed = true;
-            }
-            Err(error) if is_retryable(&error) => {}
-            Err(error) => return Err(error),
-        }
-
-        match remote.read(&mut downstream) {
-            Ok(0) => remote_open = false,
-            Ok(count) => {
-                write_all_nonblocking(local, &downstream[..count])?;
-                progressed = true;
-            }
-            Err(error) if is_retryable(&error) => {}
-            Err(error) => return Err(error),
-        }
-
-        if !progressed {
-            thread::sleep(RELAY_POLL_INTERVAL);
-        }
-    }
-    Ok(())
-}
-
-fn is_retryable(error: &io::Error) -> bool {
-    matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted)
-}
-
-/// 非阻塞写全量：处理短写与 EAGAIN，并在长时间推不动时超时退出。
-fn write_all_nonblocking(sink: &mut impl Write, data: &[u8]) -> io::Result<()> {
-    let deadline = Instant::now() + RELAY_WRITE_TIMEOUT;
-    let mut offset = 0;
-    while offset < data.len() {
-        match sink.write(&data[offset..]) {
-            Ok(0) => return Err(ErrorKind::WriteZero.into()),
-            Ok(count) => offset += count,
-            Err(error) if is_retryable(&error) => {
-                if Instant::now() >= deadline {
-                    return Err(ErrorKind::TimedOut.into());
-                }
-                thread::sleep(RELAY_POLL_INTERVAL);
-            }
-            Err(error) => return Err(error),
-        }
-    }
-    sink.flush()
 }
 
 // ---------------------------------------------------------------------------

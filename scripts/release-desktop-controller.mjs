@@ -88,7 +88,7 @@ async function save() {
 async function close() {
   for (const id of sessions) { try { await request(`/api/sessions/${id}`, 'DELETE'); } catch {} }
   if (daemon) { try { await request('/api/daemon/shutdown', 'POST'); } catch {} }
-  await browser?.close().catch(() => {});
+  await Promise.race([browser?.close().catch(() => {}), wait(3000)]);
   app.kill(); appLog.end();
 }
 
@@ -127,4 +127,4 @@ try {
   }
 } catch (error) {
   errors.push(redact(error.stack)); await save(); console.error(redact(error.stack)); process.exitCode = 1;
-} finally { await close(); }
+} finally { await close(); process.stdin.destroy(); }

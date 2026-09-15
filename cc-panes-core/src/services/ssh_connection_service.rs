@@ -387,8 +387,7 @@ impl SshConnectionService {
 
         let mut session = Session::new().context("Failed to create SSH session")?;
         session.set_tcp_stream(stream);
-        session
-            .handshake()
+        super::ssh_handshake::handshake(&mut session, CONNECT_TIMEOUT)
             .map_err(|error| anyhow::anyhow!("SSH handshake failed for {address}: {error}"))?;
         // Some OpenSSH servers reject the libssh2 key exchange when its
         // socket timeout is configured before the handshake. Apply runtime

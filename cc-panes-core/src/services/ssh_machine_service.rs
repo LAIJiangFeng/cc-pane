@@ -489,21 +489,21 @@ impl SshMachineService {
         let connection_service = self.connection_service.clone();
         let connection_machine = machine.clone();
         let connection_result = tokio::task::spawn_blocking(move || {
-            connection_service.connect_machine(&connection_machine)
+            let session = connection_service.connect_machine(&connection_machine)?;
+            // libssh2 disconnect/drop can perform I/O too; keep cleanup off async workers.
+            let _ = session.disconnect(None, "connectivity check complete", None);
+            Ok::<(), anyhow::Error>(())
         })
         .await
         .context("SSH connectivity check task failed")?;
         let latency = start.elapsed().as_millis() as u64;
 
         match connection_result {
-            Ok(session) => {
-                let _ = session.disconnect(None, "connectivity check complete", None);
-                Ok(SshConnectivityResult {
-                    reachable: true,
-                    message: format!("Connected in {}ms", latency),
-                    latency_ms: Some(latency),
-                })
-            }
+            Ok(()) => Ok(SshConnectivityResult {
+                reachable: true,
+                message: format!("Connected in {}ms", latency),
+                latency_ms: Some(latency),
+            }),
             Err(error) => Ok(SshConnectivityResult {
                 reachable: false,
                 message: format!("{error:#}"),
