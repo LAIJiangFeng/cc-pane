@@ -4,6 +4,17 @@
 > file. Add the entry to both — a missing Chinese entry fails `validate-version` before any build
 > starts.
 
+## 0.12.19 - 2026-09-15
+
+Restore the MCP startup notification change omitted from the 0.12.18 release.
+
+### Fixed
+
+- Show MCP bind retries and startup failures as dismissible bottom-right notification cards, freeing the main area's top edge.
+- Update one card per failure episode. Dismissed retries stay dismissed through final failure; a new failure after recovery alerts again.
+- Keep status updates working under React StrictMode and refresh timestamps and unread state for repeated failure episodes.
+- Keep expandable error details and notification history after dismissal.
+
 ## 0.12.18 - 2026-09-15
 
 Terminal recovery and input stability, alongside the completed quick terminal, Git conflict tools and SSH routing features.

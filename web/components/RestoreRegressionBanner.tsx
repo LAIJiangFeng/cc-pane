@@ -11,8 +11,8 @@ import { isRestoreRegression } from "@/utils/restoreReport";
 /**
  * 「本应恢复的 agent leaf 丢失 resume id」时的可见告警。
  *
- * 形态与 `OrchestratorAlertBanner` 共用 `AlertBannerShell`（AppShell 顶部条、
- * status token 配色、非模态），避免为一条告警新造设计语言。
+ * 形态走 `AlertBannerShell`（AppShell 顶部条、status token 配色、非模态），
+ * 避免为一条告警新造设计语言。
  *
  * 为什么值得占一条横幅：resume id 落库链断掉后，表现只是「恢复出来的会话没有历史
  * 对话」——功能都在、没有任何报错，用户只会觉得是自己记错了。实测连续三天 100%

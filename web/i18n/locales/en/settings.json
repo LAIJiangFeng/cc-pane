@@ -946,6 +946,7 @@
     "lastError": "Last error: {{error}}"
   },
   "orchestratorAlert": {
+    "notificationBody": "Injected CLI sessions cannot use MCP tools. Free the fixed port and restart, or set CC_PANES_ORCHESTRATOR_PORT to another fixed port and restart the app.",
     "failedTitle": "MCP service did not start",
     "retrying": "MCP service binding failed. Waiting for retry attempt {{attempt}}. Next retry: {{time}}",
     "attempting": "MCP service is making bind attempt {{attempt}}.",
