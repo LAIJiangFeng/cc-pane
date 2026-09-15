@@ -21,3 +21,23 @@ test("summarizes rotated files by timestamp and keeps restarted processes separa
     assert.equal(report.processes[0].lastPrivateBytes, 200);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+test("frontend intervals are independent of sampling phase and retain stalls", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "ccpanes-performance-phase-"));
+  const summarize = async ages => {
+    await writeFile(join(dir, "performance.jsonl"), ages.map((age, i) => JSON.stringify({
+      schemaVersion: 1, bootId: "one", appPid: 1, timestampMs: 30000 + i * 15000,
+      kind: "sample", data: { frontendAgeMs: age, frontend: {} },
+    })).join("\n"));
+    return summarizePerformance(dir);
+  };
+  try {
+    const early = await summarize([700, 700, 700]);
+    const late = await summarize([14700, 14700, 14700]);
+    assert.equal(early.maxFrontendUpdateIntervalMs, 15000);
+    assert.equal(late.maxFrontendUpdateIntervalMs, 15000);
+    assert.equal(late.maxFrontendAgeMs, 14700);
+    assert.equal((await summarize([700, 15700, 30700])).maxFrontendUpdateIntervalMs, 30700);
+    assert.equal((await summarize([700])).maxFrontendUpdateIntervalMs, null);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});

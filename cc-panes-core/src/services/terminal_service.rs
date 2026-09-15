@@ -1328,6 +1328,9 @@ struct TerminalSession {
     process: Arc<dyn PtyProcess>,
     writer_tx: mpsc::SyncSender<WriterCommand>,
     status: Arc<Mutex<SessionStatus>>,
+    /// Daemon sessions receive hook statuses over HTTP without owning the app's
+    /// state machine. Keep the same 30s authority window in the PTY process.
+    hook_updated_at: Arc<Mutex<Option<Instant>>>,
     exit_code: Arc<Mutex<Option<i32>>>,
     last_output_at: Arc<Mutex<Instant>>,
     /// reader 线程取消标志：kill() 设置为 true，reader 线程检查后退出
@@ -1919,6 +1922,27 @@ fn build_session_status_info(
 
 fn should_apply_pty_status_fallback(hook_active: bool, current: SessionStatus) -> bool {
     !hook_active && !matches!(current, SessionStatus::Exited | SessionStatus::Error)
+}
+
+fn update_pty_status(
+    status: &Mutex<SessionStatus>,
+    hook_updated_at: &Mutex<Option<Instant>>,
+    hook_active: bool,
+    inferred: SessionStatus,
+    now: Instant,
+) -> (SessionStatus, bool) {
+    // Match apply_hook_status's lock order so a concurrent hook cannot be
+    // overwritten after this reader checked an obsolete freshness timestamp.
+    let mut current = status.lock().unwrap_or_else(|e| e.into_inner());
+    let recent_remote_hook = hook_updated_at
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_some_and(|at| now.saturating_duration_since(at) < Duration::from_secs(30));
+    let hook_active = hook_active || recent_remote_hook;
+    if should_apply_pty_status_fallback(hook_active, *current) {
+        *current = inferred;
+    }
+    (*current, hook_active)
 }
 
 fn append_ssh_session_options(args: &mut Vec<String>) {
@@ -3723,6 +3747,7 @@ impl TerminalService {
 
         // 状态追踪
         let status = Arc::new(Mutex::new(SessionStatus::Active));
+        let hook_updated_at = Arc::new(Mutex::new(None));
         let exit_code = Arc::new(Mutex::new(None));
         let last_output_at = Arc::new(Mutex::new(Instant::now()));
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -3790,6 +3815,7 @@ impl TerminalService {
                     process: Arc::clone(&process),
                     writer_tx: writer_tx.clone(),
                     status: status.clone(),
+                    hook_updated_at: hook_updated_at.clone(),
                     exit_code: exit_code.clone(),
                     last_output_at: last_output_at.clone(),
                     cancelled: cancelled.clone(),
@@ -4003,6 +4029,7 @@ impl TerminalService {
         let sid = session_id.clone();
         let read_emitter = emitter.clone();
         let read_status = status.clone();
+        let read_hook_updated_at = hook_updated_at.clone();
         let read_last_output = last_output_at.clone();
         let read_cancelled = cancelled.clone();
         let read_notifier = notifier.clone();
@@ -4195,18 +4222,13 @@ impl TerminalService {
                             .and_then(|sm| sm.seconds_since_last_hook(&sid))
                             .map(|secs| secs < 30)
                             .unwrap_or(false);
-                        let new_status = {
-                            let mut s = read_status.lock().unwrap_or_else(|e| {
-                                warn!("read_status lock poisoned, using fallback value");
-                                e.into_inner()
-                            });
-                            if should_apply_pty_status_fallback(hook_active, *s) {
-                                // Hook 静默后重新允许 PTY 推断接管。否则 Codex 这类只暴露
-                                // 部分 hook 事件的 CLI 会在一次 waiting-input 后永久卡住状态。
-                                *s = inferred;
-                            }
-                            *s
-                        };
+                        let (new_status, hook_active) = update_pty_status(
+                            &read_status,
+                            &read_hook_updated_at,
+                            hook_active,
+                            inferred,
+                            Instant::now(),
+                        );
 
                         // 检测状态变更并触发通知
                         // 阶段 2.8：hook 主导时不再由 PTY 触发 WaitingInput 通知（hook 自己上报更准）。
@@ -5707,6 +5729,10 @@ impl TerminalService {
             // 写入 status Mutex（沿用 PTY read 线程的 lock 模式）
             if let Ok(mut s) = session.status.lock() {
                 *s = new_status;
+                *session
+                    .hook_updated_at
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
             }
             session.process.pid()
         };
@@ -7601,11 +7627,12 @@ mod tests {
     }
 
     #[test]
-    fn healthy_orchestrator_info_drops_unreachable_port() {
+    fn healthy_orchestrator_info_drops_an_endpoint_without_a_health_responder() {
         let (service, _temp_dir) = terminal_service_for_test();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind test port");
         let port = listener.local_addr().expect("listener addr").port();
-        drop(listener);
+        // Keep ownership until the probe finishes. Closing an ephemeral port lets
+        // a parallel test immediately bind a healthy responder to the same port.
 
         service.set_orchestrator_info(port, "token".to_string());
 
@@ -7615,6 +7642,7 @@ mod tests {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .is_none());
+        drop(listener);
     }
 
     /// 起一个只回 `/api/health` → `{"status":"ok"}` 的极简 HTTP 监听器，
@@ -7801,6 +7829,7 @@ mod tests {
                     process: Arc::new(FakePtyProcess { echo: pty_echo }),
                     writer_tx,
                     status: Arc::new(Mutex::new(SessionStatus::Idle)),
+                    hook_updated_at: Arc::new(Mutex::new(None)),
                     exit_code: Arc::new(Mutex::new(None)),
                     last_output_at: Arc::new(Mutex::new(Instant::now())),
                     cancelled: Arc::new(AtomicBool::new(false)),
@@ -7930,6 +7959,38 @@ mod tests {
             false,
             SessionStatus::Error
         ));
+    }
+
+    #[test]
+    fn daemon_hook_status_survives_output_until_the_authority_window_expires() {
+        let (service, _temp_dir) = terminal_service_for_test();
+        install_recording_session(&service, "remote-hook", Arc::new(Mutex::new(Vec::new())));
+        assert!(service.state_machine.lock().unwrap().is_none());
+        service.apply_hook_status("remote-hook", SessionStatus::Thinking);
+        let sessions = service.sessions.lock().unwrap();
+        let session = sessions.get("remote-hook").unwrap();
+        let received_at = session.hook_updated_at.lock().unwrap().unwrap();
+        assert_eq!(
+            update_pty_status(
+                &session.status,
+                &session.hook_updated_at,
+                false,
+                SessionStatus::Active,
+                received_at + Duration::from_secs(29)
+            ),
+            (SessionStatus::Thinking, true),
+        );
+        // A missing follow-up hook must still permit the existing stale fallback.
+        assert_eq!(
+            update_pty_status(
+                &session.status,
+                &session.hook_updated_at,
+                false,
+                SessionStatus::Active,
+                received_at + Duration::from_secs(31)
+            ),
+            (SessionStatus::Active, false),
+        );
     }
 
     #[test]

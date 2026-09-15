@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 export async function summarizePerformance(directory, since = 0) {
   const files = (await readdir(directory)).filter(name => /^performance(?:\.[1-7])?\.jsonl$/.test(name));
   const processes = new Map();
+  const frontendObservations = new Map();
   const report = { samples: 0, malformedLines: 0, firstTimestampMs: null, lastTimestampMs: null,
     events: {}, markers: [], maxFrontendAgeMs: 0, maxHeapUsedBytes: 0, maxQueuedChars: 0,
     maxTimerLagMs: 0, maxPollingSessions: 0, maxSampleDurationMs: 0, processes: [] };
@@ -30,6 +31,12 @@ export async function summarizePerformance(directory, since = 0) {
       if (record.kind !== "sample") continue;
       report.samples++;
       report.maxFrontendAgeMs = Math.max(report.maxFrontendAgeMs, data.frontendAgeMs ?? 0);
+      if (data.frontend && Number.isFinite(data.frontendAgeMs) && data.frontendAgeMs >= 0) {
+        const key = `${record.bootId}:${record.appPid}`;
+        const observations = frontendObservations.get(key) ?? [];
+        observations.push({ at, age: data.frontendAgeMs });
+        frontendObservations.set(key, observations);
+      }
       report.maxHeapUsedBytes = Math.max(report.maxHeapUsedBytes, data.frontend?.heapUsedBytes ?? 0);
       report.maxTimerLagMs = Math.max(report.maxTimerLagMs, data.frontend?.timerLagMs ?? 0);
       report.maxPollingSessions = Math.max(report.maxPollingSessions, data.bridge?.pollingSessions ?? 0);
@@ -55,6 +62,21 @@ export async function summarizePerformance(directory, since = 0) {
     }
   }
   report.markers.sort((a, b) => a - b);
+  // Both collectors run every 15s, with independent phases. A raw age of 0.7s
+  // versus 14.7s alone says nothing about responsiveness. Compare actual update
+  // intervals, retaining age as a lower bound so a stalled reporter still fails.
+  report.maxFrontendUpdateIntervalMs = null;
+  for (const observations of frontendObservations.values()) {
+    if (observations.length < 2) continue;
+    observations.sort((a, b) => a.at - b.at);
+    let previousReportAt = observations[0].at - observations[0].age;
+    for (const observation of observations) {
+      const reportAt = observation.at - observation.age;
+      report.maxFrontendUpdateIntervalMs = Math.max(report.maxFrontendUpdateIntervalMs ?? 0,
+        observation.age, reportAt - previousReportAt);
+      previousReportAt = Math.max(previousReportAt, reportAt);
+    }
+  }
   report.processes = [...processes.values()].sort((a, b) => (b.peakPrivateBytes ?? b.peakResidentBytes) - (a.peakPrivateBytes ?? a.peakResidentBytes));
   return report;
 }

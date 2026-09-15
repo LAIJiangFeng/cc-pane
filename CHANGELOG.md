@@ -17,6 +17,8 @@ Terminal recovery and input stability, alongside the completed quick terminal, G
 - Retire stopped orchestrator endpoints while preserving reconnect credentials. Publish readiness only after durable endpoint registration; old processes cannot retire a replacement instance.
 - Preserve daemon sessions during installer upgrades instead of killing them through the app's process tree.
 - Complete language switching and notification focus for popped-out windows.
+- Bound SSH handshakes and keep jump relays bidirectional under backpressure, avoiding stalled route checks.
+- Preserve fresh hook status in daemon sessions when subsequent PTY output carries an OSC progress badge.
 
 ### Added
 
