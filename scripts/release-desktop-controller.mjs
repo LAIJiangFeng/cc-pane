@@ -55,7 +55,15 @@ const until = async (predicate, label, timeout = 30000) => {
 let browser, page, daemon, owner, projectId;
 const sessions = [], checks = {}, errors = [];
 const redact = value => String(value).replaceAll(daemon?.token ?? '__none__', '[REDACTED]');
-const call = (command, args = {}) => page.evaluate(([name, args]) => window.__TAURI_INTERNALS__.invoke(name, args), [command, args]);
+async function call(command, args = {}) {
+  let timer;
+  try {
+    return await Promise.race([
+      page.evaluate(([name, args]) => window.__TAURI_INTERNALS__.invoke(name, args), [command, args]),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`IPC timeout: ${command}`)), command === 'create_terminal_session' ? 65000 : 45000); }),
+    ]);
+  } finally { clearTimeout(timer); }
+}
 async function request(path, method = 'GET', body) {
   const response = await fetch(`http://${daemon.addr}${path}`, { method, headers: {
     Authorization: `Bearer ${daemon.token}`, 'X-CC-Panes-Instance': owner, 'Content-Type': 'application/json',

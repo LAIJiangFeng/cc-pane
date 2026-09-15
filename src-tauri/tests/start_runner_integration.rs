@@ -13,9 +13,9 @@ use std::time::Duration;
 
 fn platform_sleep_command() -> String {
     if cfg!(target_os = "windows") {
-        // Exercise runner lifecycle without a user's PowerShell profile/history or
-        // PSReadLine cursor queries, which require a renderer this test does not own.
-        "powershell.exe -NoLogo -NoProfile -NonInteractive -Command \"Start-Sleep -Seconds 5\" & exit".to_string()
+        // Six loopback pings take about five seconds. Avoid cold PowerShell startup
+        // and its console probing on headless Windows CI; no external host is used.
+        "ping.exe -n 6 127.0.0.1 >nul & exit /b 0".to_string()
     } else {
         "sleep 5; exit".to_string()
     }
@@ -86,8 +86,8 @@ async fn wait_for_session_exit(terminal: &TerminalService, session_id: &str) {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     let output = terminal
-        .get_session_output(session_id, 80)
-        .map(|output| output.lines.join("\n"))
+        .get_session_replay_snapshot(session_id)
+        .map(|snapshot| format!("{snapshot:?}"))
         .unwrap_or_else(|error| format!("failed to read output: {error}"));
     let _ = terminal.kill(session_id);
     panic!("session did not exit: {session_id}\n{output}");

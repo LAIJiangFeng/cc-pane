@@ -67,10 +67,9 @@ npm run smoke:static-replay -- <playwright-module-path> [browser-channel]
 - [ ] 静态回放四组全部像素对账通过、无 pageerror。
 - [ ] 归档 before/during/after 截图（脚本已写入临时 artifacts 目录），PR 里新旧并排。
 
-**缺口（诚实标注，未在本文补齐）**：固定样张集目前只覆盖恢复路径 + CJK 文本，
-**尚未**纳入 boxdraw 全家桶、块/浓度/象限字符、Powerline 分隔符、CJK 对齐标尺、
-256 色/真彩渐变。要扩 F6.2，应在 `terminal-static-replay.html`（或新增 fixture）里
-注入这些样张并各自截图归档，再由本清单勾选。当前发版至少保证：
+固定样张集已扩展 boxdraw、块/浓度/象限字符、Powerline 分隔符、CJK 对齐标尺、
+256 色和真彩渐变，均随 `terminal-static-replay.html` 的四组恢复测试归档。
+它验证已选样张的恢复一致性，不代表所有字体组合的完整字形覆盖。当前发版还须保证：
 - [ ] WebGL 透明/花屏回归项过 `smoke-transparent-webgl.mjs`（见 `CLAUDE.md` 已记录的坑）。
 - [ ] 主题对比度过 `npm run check:theme-contrast`；bundle 预算过 `npm run check:bundle`。
 
