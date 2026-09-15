@@ -103,6 +103,34 @@ describe("useNotificationStore", () => {
     });
   });
 
+  describe("upsert", () => {
+    it("同 id 替换正文且不重复入列", () => {
+      useNotificationStore.getState().add(makeNotification({ id: "a", title: "旧" }));
+      useNotificationStore.getState().upsert(makeNotification({ id: "a", title: "新" }));
+
+      const { notifications } = useNotificationStore.getState();
+      expect(notifications).toHaveLength(1);
+      expect(notifications[0].title).toBe("新");
+    });
+
+    it("正文未变时不写 store", () => {
+      const original = makeNotification({ id: "a", title: "同", body: "x" });
+      useNotificationStore.getState().add(original);
+      const before = useNotificationStore.getState().notifications[0];
+      useNotificationStore.getState().upsert(makeNotification({ id: "a", title: "同", body: "x", timestamp: original.timestamp }));
+      expect(useNotificationStore.getState().notifications[0]).toBe(before);
+    });
+
+    it("未知 id 与 add 一样插到最前", () => {
+      useNotificationStore.getState().add(makeNotification({ id: "a" }));
+      useNotificationStore.getState().upsert(makeNotification({ id: "b" }));
+      expect(useNotificationStore.getState().notifications.map((item) => item.id)).toEqual([
+        "b",
+        "a",
+      ]);
+    });
+  });
+
   describe("clear", () => {
     it("应清空内存列表与 sessionStorage", () => {
       useNotificationStore.setState({
