@@ -530,6 +530,7 @@ const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
       resyncInProgressRef,
       overflowResyncRef,
       flushHiddenWrites,
+      onRendererFailure: recoverRenderer,
       debugLog,
       currentSessionIdRef,
       lastOutputReceivedAtRef,

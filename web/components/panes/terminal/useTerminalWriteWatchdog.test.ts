@@ -17,18 +17,17 @@ function makeBuffer(pending: number): TerminalHiddenWriteBuffer {
   };
 }
 
-function makeFlow(stats: { queuedWrites: number; oldestWaitMs: number }): FlowControl & { reset: ReturnType<typeof vi.fn> } {
+function makeFlow(stats: { queuedWrites: number; oldestWaitMs: number }): FlowControl {
   return {
-    write: vi.fn(),
-    reset: vi.fn(),
+    write: vi.fn().mockResolvedValue(undefined),
     dispose: vi.fn(),
     queueLength: () => stats.queuedWrites,
     takeIntervalCallbackMaxMs: () => 0,
     getStats: () => ({
       queuedChars: 0, inFlightChars: 0, receivedChars: 0, writeCalls: 0, failedWrites: 0,
-      callbackMaxMs: 0, ...stats,
+      callbackMaxMs: 0, inFlightWrites: 0, blocked: false, pendingCallbacks: 0, ...stats,
     }),
-  } as unknown as FlowControl & { reset: ReturnType<typeof vi.fn> };
+  };
 }
 
 function setup(options: {
@@ -45,6 +44,7 @@ function setup(options: {
 }) {
   const flushHiddenWrites = vi.fn().mockResolvedValue("flushed");
   const overflowResync = vi.fn().mockResolvedValue(true);
+  const onRendererFailure = vi.fn();
   const resyncInProgressRef = { current: options.resync ?? false };
   const debugLog = vi.fn();
   const terminalInstanceRef = {
@@ -61,6 +61,7 @@ function setup(options: {
     resyncInProgressRef,
     overflowResyncRef: { current: overflowResync },
     flushHiddenWrites,
+    onRendererFailure,
     debugLog,
     currentSessionIdRef: { current: options.sessionId ?? null },
     lastOutputReceivedAtRef: { current: options.lastReceived ?? 0 },
@@ -68,7 +69,7 @@ function setup(options: {
       options.daemonRecent ? Date.now() - 1_000 : (options.daemonLast ?? null),
     rebindOutput,
   }));
-  return { flushHiddenWrites, overflowResync, resyncInProgressRef, debugLog, rebindOutput };
+  return { flushHiddenWrites, overflowResync, resyncInProgressRef, debugLog, rebindOutput, onRendererFailure };
 }
 
 describe("useTerminalWriteWatchdog", () => {
@@ -106,26 +107,30 @@ describe("useTerminalWriteWatchdog", () => {
     }
   });
 
-  it("resets flow control when the write queue stops draining", async () => {
+  it("disposes the stale writer before requesting renderer recovery", async () => {
     vi.useFakeTimers();
     try {
       const flow = makeFlow({ queuedWrites: 3, oldestWaitMs: 20_000 });
-      const { debugLog } = setup({ flow });
+      const { debugLog, onRendererFailure, overflowResync } = setup({ flow });
       await vi.advanceTimersByTimeAsync(2_100);
-      expect(flow.reset).toHaveBeenCalledTimes(1);
+      expect(flow.dispose).toHaveBeenCalledTimes(1);
+      expect(onRendererFailure).toHaveBeenCalledWith(expect.any(Error));
+      expect(vi.mocked(flow.dispose).mock.invocationCallOrder[0]).toBeLessThan(onRendererFailure.mock.invocationCallOrder[0]);
+      expect(overflowResync).not.toHaveBeenCalled();
       expect(debugLog).toHaveBeenCalledWith("watchdog.write-queue-stuck", expect.any(Object));
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it("does not reset a healthy queue", async () => {
+  it("leaves a healthy queue and renderer alone", async () => {
     vi.useFakeTimers();
     try {
       const flow = makeFlow({ queuedWrites: 3, oldestWaitMs: 10 });
-      setup({ flow });
+      const { onRendererFailure } = setup({ flow });
       await vi.advanceTimersByTimeAsync(6_100);
-      expect(flow.reset).not.toHaveBeenCalled();
+      expect(flow.dispose).not.toHaveBeenCalled();
+      expect(onRendererFailure).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }
@@ -149,7 +154,7 @@ describe("useTerminalWriteWatchdog", () => {
       const flow = makeFlow({ queuedWrites: 3, oldestWaitMs: 20_000 });
       setup({ flow });
       await vi.advanceTimersByTimeAsync(10_000);
-      expect(flow.reset).toHaveBeenCalledTimes(1);
+      expect(flow.dispose).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
     }
