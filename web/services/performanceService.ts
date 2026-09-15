@@ -65,7 +65,10 @@ export function startPerformanceSampling(): () => void {
     inFlight = true;
     try {
     const memory = (performance as HeapPerformance).memory;
-    const snapshot: FrontendPerformanceSnapshot = { ...collectTerminalPerformanceMetrics(), heapUsedBytes: memory?.usedJSHeapSize ?? null,
+    const { terminals, ...metrics } = collectTerminalPerformanceMetrics();
+    // These two fields are local flow diagnostics, not part of the strict Rust DTO.
+    const recorderTerminals = terminals.map(({ blocked: _blocked, pendingCallbacks: _pending, ...metric }) => metric);
+    const snapshot: FrontendPerformanceSnapshot = { ...metrics, terminals: recorderTerminals, heapUsedBytes: memory?.usedJSHeapSize ?? null,
       heapTotalBytes: memory?.totalJSHeapSize ?? null, timerLagMs: Math.min(lag, 86_400_000),
       longTaskCount, longTaskMaxMs: Math.min(longTaskMax, 86_400_000), visibility: document.visibilityState === "visible" ? "visible" : "hidden",
       focused: document.hasFocus(), longTaskSupported: observer !== null,

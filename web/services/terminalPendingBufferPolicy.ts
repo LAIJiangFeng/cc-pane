@@ -130,6 +130,11 @@ export function pendingChunkCount(sessionId: string): number {
   return buffers.get(sessionId)?.chunks.length ?? 0;
 }
 
+/** 诊断用：溢出闩锁是否还在等 registerDesync 补投。不消费。 */
+export function pendingOverflowLatched(sessionId: string): boolean {
+  return latchedDesync.has(sessionId) || buffers.get(sessionId)?.overflowed === true;
+}
+
 /** 会话销毁清理。 */
 export function clearPendingOutput(sessionId: string): void {
   buffers.delete(sessionId);

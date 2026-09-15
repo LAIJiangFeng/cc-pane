@@ -13,6 +13,7 @@ const webglMock = vi.hoisted(() => {
       _gl: { getExtension: (name: string) => { loseContext(): void } | null };
       _canvas: HTMLCanvasElement;
       _clearModel: ReturnType<typeof vi.fn>;
+      _glyphRenderer: { _atlas: { _requestClearModel: boolean } };
     } | undefined = {
       _gl: {
         getExtension: (name: string) => name === "WEBGL_lose_context"
@@ -21,9 +22,12 @@ const webglMock = vi.hoisted(() => {
       },
       _canvas: this.canvas,
       _clearModel: vi.fn(),
+      _glyphRenderer: { _atlas: { _requestClearModel: false } },
     };
     public contextLossHandler: (() => void) | null = null;
     public atlasChangeHandler: ((canvas: HTMLCanvasElement) => void) | null = null;
+    public addCanvasHandler: ((canvas: HTMLCanvasElement) => void) | null = null;
+    public removeCanvasHandler: ((canvas: HTMLCanvasElement) => void) | null = null;
 
     constructor() {
       instances.push(this);
@@ -39,11 +43,13 @@ const webglMock = vi.hoisted(() => {
       return { dispose: vi.fn() };
     }
 
-    public onAddTextureAtlasCanvas() {
+    public onAddTextureAtlasCanvas(handler: (canvas: HTMLCanvasElement) => void) {
+      this.addCanvasHandler = handler;
       return { dispose: vi.fn() };
     }
 
-    public onRemoveTextureAtlasCanvas() {
+    public onRemoveTextureAtlasCanvas(handler: (canvas: HTMLCanvasElement) => void) {
+      this.removeCanvasHandler = handler;
       return { dispose: vi.fn() };
     }
   }
@@ -84,7 +90,11 @@ function createMockTerminal(): Terminal {
     clearTextureAtlas: vi.fn(),
     loadAddon: vi.fn(),
     onRender: vi.fn((handler: () => void) => {
-      renderHandlers.set(element, handler);
+      const previous = renderHandlers.get(element);
+      renderHandlers.set(element, () => {
+        previous?.();
+        handler();
+      });
       return { dispose: vi.fn() };
     }),
   } as unknown as Terminal;
@@ -132,6 +142,26 @@ describe("terminal renderer controller", () => {
     expect(webglMock.instances[0]._renderer?._clearModel).toHaveBeenCalledWith(false);
     expect(term.refresh).toHaveBeenCalledWith(0, 23);
     expect(term.clearTextureAtlas).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
+  it("consumes the shared atlas latch on a structure change, not on every render", () => {
+    const term = createMockTerminal();
+    const controller = createTerminalRendererController({
+      term,
+      logger: vi.fn(),
+      onRendererChanged: vi.fn(),
+    });
+
+    controller.configure("webgl");
+    const atlas = webglMock.instances[0]._renderer?._glyphRenderer._atlas;
+    expect(atlas).toBeDefined();
+    atlas!._requestClearModel = true;
+    renderHandlers.get(term.element!)?.();
+    expect(atlas!._requestClearModel).toBe(true);
+    webglMock.instances[0].atlasChangeHandler?.(document.createElement("canvas"));
+    // The test rAF stub executes atlas broadcasts synchronously.
+    expect(atlas!._requestClearModel).toBe(false);
     controller.dispose();
   });
 
@@ -335,6 +365,30 @@ describe("terminal renderer controller", () => {
     secondController.dispose();
   });
 
+  it("full-refreshes shared panes when the atlas grows a same-size page", () => {
+    const term = createMockTerminal();
+    const controller = createTerminalRendererController({
+      term,
+      logger: vi.fn(),
+      onRendererChanged: vi.fn(),
+    });
+    controller.configure("webgl");
+    const page = document.createElement("canvas");
+    page.width = 512;
+    page.height = 512;
+    vi.mocked(term.refresh).mockClear();
+    webglMock.instances[0].addCanvasHandler?.(page);
+    webglMock.instances[0].addCanvasHandler?.(page);
+    expect(term.refresh).toHaveBeenCalledWith(0, 23);
+    const merged = document.createElement("canvas");
+    merged.width = 1024;
+    merged.height = 1024;
+    vi.mocked(term.refresh).mockClear();
+    webglMock.instances[0].addCanvasHandler?.(merged);
+    expect(term.refresh).toHaveBeenCalledWith(0, 23);
+    controller.dispose();
+  });
+
   it("logs renderer.webgl.atlas.invalidate.unavailable when _clearModel is missing", () => {
     const term = createMockTerminal();
     const logger = vi.fn();
@@ -459,6 +513,36 @@ describe("terminal renderer controller", () => {
     document.dispatchEvent(new Event("visibilitychange"));
 
     expect(term.refresh).not.toHaveBeenCalledWith(0, 23);
+    controller.dispose();
+  });
+
+  it("broadcasts atlas refresh on same-size add, merge add, and remove", () => {
+    const term = createMockTerminal();
+    const controller = createTerminalRendererController({
+      term,
+      logger: vi.fn(),
+      onRendererChanged: vi.fn(),
+    });
+    controller.configure("webgl");
+    const addon = webglMock.instances[0];
+
+    const sameSize = document.createElement("canvas");
+    sameSize.width = 512;
+    sameSize.height = 512;
+    vi.mocked(term.refresh).mockClear();
+    addon.addCanvasHandler?.(sameSize);
+    expect(term.refresh).toHaveBeenCalledWith(0, 23);
+
+    const merged = document.createElement("canvas");
+    merged.width = 1024;
+    merged.height = 1024;
+    vi.mocked(term.refresh).mockClear();
+    addon.addCanvasHandler?.(merged);
+    expect(term.refresh).toHaveBeenCalledWith(0, 23);
+
+    vi.mocked(term.refresh).mockClear();
+    addon.removeCanvasHandler?.(sameSize);
+    expect(term.refresh).toHaveBeenCalledWith(0, 23);
     controller.dispose();
   });
 });

@@ -8,41 +8,33 @@ interface TerminalWriteFlowControlOptions {
   highWatermark?: number;
   lowWatermark?: number;
   now?: () => number;
+  onStall?: (error: Error) => void;
 }
 
-// Keep the xterm write queue shallow during TUI redraw bursts. Orca applies a
-// credit window at the stream layer; this is the equivalent renderer-side
-// window for the desktop xterm instance.
-const DEFAULT_BYTES_THRESHOLD = 16 * 1024;
-const DEFAULT_HIGH_WATERMARK = 4;
-const DEFAULT_LOW_WATERMARK = 2;
-// xterm.write parses VT input synchronously. Keep replay/checkpoint payloads
-// bounded per renderer turn instead of handing one multi-MiB string to xterm.
 const MAX_TARGET_WRITE_CHARS = 16 * 1024;
+const WRITE_STALL_MS = 3_000;
 
+/** One FIFO owns both queued tails and writes already handed to xterm. */
 export function createTerminalWriteFlowControl(
   target: TerminalWriteTarget,
-  options: TerminalWriteFlowControlOptions = {}
+  options: TerminalWriteFlowControlOptions = {},
 ) {
   const enabled = options.enabled ?? true;
-  const bytesThreshold = Math.max(1, options.bytesThreshold ?? DEFAULT_BYTES_THRESHOLD);
-  const highWatermark = Math.max(1, options.highWatermark ?? DEFAULT_HIGH_WATERMARK);
-  const lowWatermark = Math.min(
-    highWatermark - 1,
-    Math.max(0, options.lowWatermark ?? DEFAULT_LOW_WATERMARK),
-  );
-
+  const bytesThreshold = Math.max(1, options.bytesThreshold ?? MAX_TARGET_WRITE_CHARS);
+  const highWatermark = Math.max(1, options.highWatermark ?? 4);
+  const lowWatermark = Math.min(highWatermark - 1, Math.max(0, options.lowWatermark ?? 2));
+  const now = options.now ?? (() => performance.now());
   interface PendingWrite {
     data: string;
     offset: number;
     queuedAt: number;
+    waiting: boolean;
     onWritten?: () => void;
     resolve: () => void;
     reject: (error: unknown) => void;
   }
-
   const queue: PendingWrite[] = [];
-  const now = options.now ?? (() => performance.now());
+  const pending = new Set<PendingWrite>();
   let queuedChars = 0;
   let inFlightChars = 0;
   let inFlightWrites = 0;
@@ -53,152 +45,136 @@ export function createTerminalWriteFlowControl(
   let intervalCallbackMaxMs = 0;
   let blocked = false;
   let pumping = false;
-  let pumpYieldScheduled = false;
   let pendingCallbacks = 0;
   let bytesWritten = 0;
+  let failure: Error | null = null;
+  let watchdog: ReturnType<typeof setTimeout> | null = null;
+  let pumpTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function clearWatchdog(): void {
+    if (watchdog !== null) clearTimeout(watchdog);
+    watchdog = null;
+  }
+
+  function stop(error: Error): void {
+    if (failure) return;
+    failure = error;
+    clearWatchdog();
+    if (pumpTimer !== null) clearTimeout(pumpTimer);
+    pumpTimer = null;
+    failedWrites += pending.size;
+    for (const entry of pending) entry.reject(error);
+    pending.clear();
+    queue.length = 0;
+    queuedChars = inFlightChars = inFlightWrites = pendingCallbacks = bytesWritten = 0;
+    blocked = false;
+  }
+
+  function watchProgress(): void {
+    if (watchdog !== null || inFlightWrites === 0 || failure) return;
+    watchdog = setTimeout(() => {
+      watchdog = null;
+      const error = new Error("Terminal output parsing made no progress");
+      stop(error);
+      // The view owner decides how to recover; never resume this failed writer.
+      options.onStall?.(error);
+    }, WRITE_STALL_MS);
+  }
 
   function schedulePump(): void {
-    if (pumpYieldScheduled) return;
-    pumpYieldScheduled = true;
-    const resume = () => {
-      pumpYieldScheduled = false;
-      pump();
-    };
-    // A zero-delay timer can starve rendering when several terminals are
-    // flooding at once. One chunk per animation frame keeps input/layout
-    // work ahead of the replay while preserving byte order.
-    if (typeof requestAnimationFrame === "function") {
-      requestAnimationFrame(resume);
-    } else {
-      setTimeout(resume, 16);
-    }
+    if (pumpTimer !== null || failure) return;
+    // Yield large replay tails without depending on background rAF delivery.
+    pumpTimer = setTimeout(() => { pumpTimer = null; pump(); }, 16);
   }
 
   function pump(): void {
-    if (pumping || blocked) return;
+    if (pumping || blocked || failure || pumpTimer !== null) return;
     pumping = true;
     try {
-      while (queue.length > 0 && !blocked && !pumpYieldScheduled) {
-        const entry = queue.shift()!;
-        const chunk = entry.data.slice(entry.offset, entry.offset + MAX_TARGET_WRITE_CHARS);
-        entry.offset += chunk.length;
+      while (queue.length && !blocked && !failure && pumpTimer === null) {
+        const entry = queue[0];
+        if (entry.waiting) break;
+        let end = Math.min(entry.data.length, entry.offset + MAX_TARGET_WRITE_CHARS);
+        // Keep a UTF-16 surrogate pair in one xterm write.
+        const last = entry.data.charCodeAt(end - 1);
+        if (end < entry.data.length && last >= 0xd800 && last <= 0xdbff) end--;
+        const chunk = entry.data.slice(entry.offset, end);
+        entry.offset = end;
+        entry.waiting = true;
+        if (end === entry.data.length) queue.shift();
         queuedChars -= chunk.length;
         inFlightChars += chunk.length;
-        inFlightWrites += 1;
+        inFlightWrites++;
         bytesWritten += chunk.length;
-        const shouldTrackCallback = enabled && bytesWritten >= bytesThreshold;
-        if (shouldTrackCallback) {
+        const tracked = enabled && bytesWritten >= bytesThreshold;
+        if (tracked) {
           bytesWritten = 0;
-          pendingCallbacks += 1;
-          if (pendingCallbacks >= highWatermark) blocked = true;
+          pendingCallbacks++;
+          blocked = pendingCallbacks >= highWatermark;
         }
-
-        let callbackCompleted = false;
+        watchProgress();
+        let completed = false;
         const complete = () => {
-          if (callbackCompleted) return;
-          callbackCompleted = true;
+          if (completed || failure || !pending.has(entry)) return;
+          completed = true;
+          entry.waiting = false;
           inFlightChars -= chunk.length;
-          inFlightWrites -= 1;
+          inFlightWrites--;
           const elapsed = now() - entry.queuedAt;
           callbackMaxMs = Math.max(callbackMaxMs, elapsed);
           intervalCallbackMaxMs = Math.max(intervalCallbackMaxMs, elapsed);
-          if (shouldTrackCallback) {
-            pendingCallbacks = Math.max(0, pendingCallbacks - 1);
-            if (blocked && pendingCallbacks <= lowWatermark) blocked = false;
+          if (tracked) pendingCallbacks--;
+          if (blocked && pendingCallbacks <= lowWatermark) blocked = false;
+          clearWatchdog();
+          watchProgress();
+          if (entry.offset < entry.data.length) schedulePump();
+          else {
+            pending.delete(entry);
+            try { entry.onWritten?.(); entry.resolve(); }
+            catch (error) { entry.reject(error); }
           }
-          try {
-            if (entry.offset < entry.data.length) {
-              queue.unshift(entry);
-              // A synchronous xterm callback would otherwise make the outer
-              // pump consume every chunk in one renderer turn.
-              schedulePump();
-            } else {
-              entry.onWritten?.();
-              entry.resolve();
-            }
-          } catch (error) {
-            entry.reject(error);
-          } finally {
-            pump();
-          }
+          pump();
         };
-
-        try {
-          target.write(chunk, complete);
-        } catch (error) {
-          if (!callbackCompleted) {
-            inFlightChars -= chunk.length;
-            inFlightWrites -= 1;
-            failedWrites += 1;
-          }
-          if (!callbackCompleted && shouldTrackCallback) {
-            pendingCallbacks = Math.max(0, pendingCallbacks - 1);
-            if (blocked && pendingCallbacks <= lowWatermark) blocked = false;
-          }
-          callbackCompleted = true;
-          entry.reject(error);
-        }
+        try { target.write(chunk, complete); }
+        catch (error) { stop(error instanceof Error ? error : new Error(String(error))); }
       }
-    } finally {
-      pumping = false;
-    }
-
-    // Synchronous xterm mocks can complete while the pump is active. Run one
-    // more pass after dropping the re-entrancy guard so queued writes progress.
-    if (!blocked && !pumpYieldScheduled && queue.length > 0) pump();
+    } finally { pumping = false; }
   }
 
   function write(data: string, onWritten?: () => void): Promise<void> {
+    if (failure) return Promise.reject(failure);
+    if (!data) {
+      try { onWritten?.(); return Promise.resolve(); }
+      catch (error) { return Promise.reject(error); }
+    }
     return new Promise<void>((resolve, reject) => {
+      const entry = { data, offset: 0, queuedAt: now(), waiting: false, onWritten, resolve, reject };
+      pending.add(entry);
+      queue.push(entry);
       queuedChars += data.length;
       receivedChars += data.length;
-      writeCalls += 1;
-      queue.push({ data, offset: 0, queuedAt: now(), onWritten, resolve, reject });
-      try {
-        pump();
-      } catch (error) {
-        reject(error);
-      }
+      writeCalls++;
+      pump();
     });
   }
 
-  function reset(): void {
-    bytesWritten = 0;
-    pendingCallbacks = 0;
-    blocked = false;
-    pump();
-  }
-
-  /**
-   * 拆除：拒绝所有未完成的写入并清空队列。
-   *
-   * TerminalView 卸载时先 reset() 再把引用置 null，队列里的 Promise 就此**永不
-   * settle**——它们的 await 方（terminalOutputHandler 的 writeTerminalData）会永远
-   * 挂着，连带扣住的流控信用也永远还不回去（= 上游窗口被永久缩小一截）。
-   * 这里显式 reject 让 catch 分支跑起来：那里会 invalidateSeq 并归还信用。
-   */
   function dispose(reason = "terminal write flow control disposed"): void {
-    const pending = queue.splice(0);
-    queuedChars = 0;
-    bytesWritten = 0;
-    pendingCallbacks = 0;
-    blocked = false;
-    for (const entry of pending) entry.reject(new Error(reason));
-  }
-
-  /** 队列深度。看门狗与诊断用——此前完全不可观测。 */
-  function queueLength(): number {
-    return queue.length;
+    stop(new DOMException(reason, "AbortError"));
   }
 
   return {
     write,
-    reset,
     dispose,
-    queueLength,
-    takeIntervalCallbackMaxMs: () => { const result = intervalCallbackMaxMs; intervalCallbackMaxMs = 0; return result; },
-    getStats: () => ({ queuedChars, inFlightChars, inFlightWrites, queuedWrites: queue.length,
-      receivedChars, writeCalls, failedWrites, callbackMaxMs,
-      oldestWaitMs: queue.length ? Math.max(0, now() - queue[0].queuedAt) : 0 }),
+    queueLength: () => queue.length,
+    takeIntervalCallbackMaxMs: () => {
+      const result = intervalCallbackMaxMs;
+      intervalCallbackMaxMs = 0;
+      return result;
+    },
+    getStats: () => ({
+      queuedChars, inFlightChars, inFlightWrites, queuedWrites: queue.length,
+      receivedChars, writeCalls, failedWrites, callbackMaxMs, blocked, pendingCallbacks,
+      oldestWaitMs: pending.size ? Math.max(0, now() - pending.values().next().value!.queuedAt) : 0,
+    }),
   };
 }

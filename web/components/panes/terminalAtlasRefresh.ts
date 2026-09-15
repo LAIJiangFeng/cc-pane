@@ -17,11 +17,21 @@ import type { Terminal } from "@xterm/xterm";
 
 type WebglRendererGlyphModel = {
   _clearModel?: (clearGlyphRenderer: boolean) => void;
+  _glyphRenderer?: {
+    _atlas?: { _requestClearModel?: boolean };
+    value?: { _atlas?: { _requestClearModel?: boolean } };
+    _value?: { _atlas?: { _requestClearModel?: boolean } };
+  };
 };
 
 type WebglAddonGlyphModel = {
   _renderer?: WebglRendererGlyphModel;
 };
+
+function textureAtlasOf(addon: unknown): { _requestClearModel?: boolean } | undefined {
+  const glyph = (addon as WebglAddonGlyphModel | null | undefined)?._renderer?._glyphRenderer;
+  return glyph?._atlas ?? glyph?.value?._atlas ?? glyph?._value?._atlas;
+}
 
 /**
  * 丢掉该 pane 的 CPU 顶点 skip 缓存，不碰共享 atlas，也不清 GPU 缓冲。
@@ -42,14 +52,19 @@ export function invalidateWebglGlyphModel(addon: unknown): boolean {
 }
 
 const atlasRefreshRegistry = new Set<() => void>();
+const changedAtlases = new Set<{ _requestClearModel?: boolean }>();
 let atlasRefreshScheduled = false;
 
 /** 图集结构变化：用 rAF 合并，避免每个事件都全量重画所有 pane。 */
-export function notifyAtlasStructureChanged(): void {
+export function notifyAtlasStructureChanged(addon?: unknown): void {
+  const atlas = textureAtlasOf(addon);
+  if (atlas) changedAtlases.add(atlas);
   if (atlasRefreshScheduled) return;
   atlasRefreshScheduled = true;
-  requestAnimationFrame(() => {
+  const flush = () => {
     atlasRefreshScheduled = false;
+    const atlases = [...changedAtlases];
+    changedAtlases.clear();
     for (const refresh of atlasRefreshRegistry) {
       try {
         refresh();
@@ -57,7 +72,15 @@ export function notifyAtlasStructureChanged(): void {
         // 单个 pane 刷新失败不影响其它 pane。
       }
     }
-  });
+    // Every view has now invalidated its CPU model or retained a visible-edge refresh.
+    // Consume the shared 0.19 latch once per atlas change, never once per painted frame.
+    for (const atlas of atlases) {
+      try { if (atlas._requestClearModel === true) atlas._requestClearModel = false; }
+      catch { /* A changed addon shape is caught by the pinned-build contract check. */ }
+    }
+  };
+  if (typeof document !== "undefined" && document.visibilityState === "hidden") queueMicrotask(flush);
+  else requestAnimationFrame(flush);
 }
 
 export interface AtlasRefreshCoordinator {

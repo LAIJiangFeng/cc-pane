@@ -1,6 +1,7 @@
 mod checkpoint_monitor;
 mod control_notifier;
 mod identity_routes;
+mod logging;
 mod self_check;
 mod server;
 mod session_output_store;
@@ -204,14 +205,19 @@ fn windows_path_to_wsl_path(path: &str) -> Option<PathBuf> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "cc_panes_daemon=info".into()),
-        )
-        .init();
-
     let args = Args::parse();
+    let _log_guard = logging::init(args.data_dir.as_deref(), args.runtime_dir.as_deref())?;
+    let previous_panic_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if let Some(location) = info.location() {
+            tracing::error!(
+                file = location.file(),
+                line = location.line(),
+                "daemon worker panicked; inspect reader lifecycle diagnostics"
+            );
+        }
+        previous_panic_hook(info);
+    }));
     let token = args.token.unwrap_or_else(generate_token);
     let addr = SocketAddr::new(args.host, args.port);
     let listener = tokio::net::TcpListener::bind(addr).await?;

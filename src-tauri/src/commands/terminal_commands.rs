@@ -22,6 +22,15 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tracing::{debug, warn};
 
+/// Keep daemon TCP, PTY and history I/O off the command dispatch thread.
+async fn run_terminal_blocking<T: Send + 'static>(
+    operation: impl FnOnce() -> AppResult<T> + Send + 'static,
+) -> AppResult<T> {
+    tauri::async_runtime::spawn_blocking(operation)
+        .await
+        .map_err(|error| AppError::from(format!("Terminal operation failed: {error}")))?
+}
+
 const TAURI_CREATE_DEADLINE: Duration = Duration::from_secs(50);
 
 fn launch_project_name(project_path: &str) -> String {
@@ -101,30 +110,7 @@ fn is_idempotent_kill_error(error: &AppError) -> bool {
 }
 
 fn summarize_terminal_input(data: &str) -> serde_json::Value {
-    let chars: Vec<String> = data
-        .chars()
-        .take(24)
-        .map(|ch| ch.escape_default().to_string())
-        .collect();
-    let code_points: Vec<String> = data
-        .chars()
-        .take(24)
-        .map(|ch| format!("{:x}", ch as u32))
-        .collect();
-    let bytes: Vec<String> = data
-        .as_bytes()
-        .iter()
-        .take(32)
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
-    serde_json::json!({
-        "chars": chars,
-        "charCount": data.chars().count(),
-        "utf8Bytes": data.len(),
-        "codePoints": code_points,
-        "bytes": bytes,
-        "truncated": data.chars().count() > 24 || data.len() > 32,
-    })
+    serde_json::json!({ "charCount": data.chars().count(), "utf8Bytes": data.len() })
 }
 
 /// 创建终端会话
@@ -375,7 +361,7 @@ pub fn get_bridge_stats(
 
 /// 向终端写入数据
 #[tauri::command]
-pub fn write_terminal(
+pub async fn write_terminal(
     service: State<'_, Arc<TerminalBackendState>>,
     session_id: String,
     data: String,
@@ -388,23 +374,34 @@ pub fn write_terminal(
         "terminal-input.trace tauri.write_terminal"
     );
     let backend = service.backend();
-    if source.as_deref() == Some("system") {
-        backend.write_reply(&session_id, &data)
-    } else {
-        backend.write(&session_id, &data)
-    }
+    // PTY/daemon writes can wait on another thread or socket. Keep that wait
+    // off the native UI thread, which also handles WebView2 IME messages.
+    // The frontend input queue and backend per-session lock retain ordering.
+    tauri::async_runtime::spawn_blocking(move || {
+        if source.as_deref() == Some("system") {
+            backend.write_reply(&session_id, &data)
+        } else {
+            backend.write(&session_id, &data)
+        }
+    })
+    .await
+    .map_err(|error| AppError::from(error.to_string()))?
 }
 
 /// 调整终端大小
 #[tauri::command]
-pub fn resize_terminal(
+pub async fn resize_terminal(
     service: State<'_, Arc<TerminalBackendState>>,
     request: ResizeRequest,
 ) -> AppResult<()> {
-    debug!(session_id = %request.session_id, "cmd::resize_terminal");
-    service
-        .backend()
-        .resize(&request.session_id, request.cols, request.rows)
+    let service = Arc::clone(service.inner());
+    run_terminal_blocking(move || {
+        debug!(session_id = %request.session_id, "cmd::resize_terminal");
+        service
+            .backend()
+            .resize(&request.session_id, request.cols, request.rows)
+    })
+    .await
 }
 
 /// 前端未标注来源时默认 user-close：kill_terminal 的既有调用方
@@ -597,13 +594,18 @@ pub async fn submit_to_session(
 
 /// 获取所有终端状态
 #[tauri::command]
-pub fn get_all_terminal_status(
+pub async fn get_all_terminal_status(
     service: State<'_, Arc<TerminalBackendState>>,
     orchestrator: State<'_, Arc<crate::services::OrchestratorService>>,
 ) -> AppResult<Vec<SessionStatusInfo>> {
-    let mut statuses = service.backend().get_all_status()?;
-    orchestrator.adjust_terminal_statuses_for_query(&mut statuses);
-    Ok(statuses)
+    let service = Arc::clone(service.inner());
+    let orchestrator = Arc::clone(orchestrator.inner());
+    run_terminal_blocking(move || {
+        let mut statuses = service.backend().get_all_status()?;
+        orchestrator.adjust_terminal_statuses_for_query(&mut statuses);
+        Ok(statuses)
+    })
+    .await
 }
 
 /// 获取可用 Shell 列表
@@ -683,59 +685,72 @@ pub async fn list_cli_tools(
 
 /// 读取终端会话的最近输出（纯文本，ANSI 已剥离）
 #[tauri::command]
-pub fn get_terminal_output(
+pub async fn get_terminal_output(
     service: State<'_, Arc<TerminalBackendState>>,
     session_id: String,
     lines: Option<usize>,
 ) -> AppResult<SessionOutput> {
-    debug!(session_id = %session_id, "cmd::get_terminal_output");
-    service
-        .backend()
-        .get_session_output(&session_id, lines.unwrap_or(0))
+    let service = Arc::clone(service.inner());
+    run_terminal_blocking(move || {
+        debug!(session_id = %session_id, "cmd::get_terminal_output");
+        service
+            .backend()
+            .get_session_output(&session_id, lines.unwrap_or(0))
+    })
+    .await
 }
 
 /// 读取终端会话最近 N 行输出。
 #[tauri::command]
-pub fn get_terminal_recent_output(
+pub async fn get_terminal_recent_output(
     service: State<'_, Arc<TerminalBackendState>>,
     session_id: String,
     lines: Option<usize>,
 ) -> AppResult<SessionOutput> {
-    debug!(session_id = %session_id, "cmd::get_terminal_recent_output");
-    service
-        .backend()
-        .get_session_output(&session_id, lines.unwrap_or(0))
+    let service = Arc::clone(service.inner());
+    run_terminal_blocking(move || {
+        debug!(session_id = %session_id, "cmd::get_terminal_recent_output");
+        service
+            .backend()
+            .get_session_output(&session_id, lines.unwrap_or(0))
+    })
+    .await
 }
 
 /// 获取 attach-existing 所需的原始 VT replay 快照
 #[tauri::command]
-pub fn get_terminal_replay_snapshot(
+pub async fn get_terminal_replay_snapshot(
     app_handle: AppHandle,
     service: State<'_, Arc<TerminalBackendState>>,
     launch_history_service: State<'_, Arc<LaunchHistoryService>>,
     history_watch_manager: State<'_, Arc<HistoryWatchManager>>,
     session_id: String,
 ) -> AppResult<Option<TerminalReplaySnapshot>> {
-    debug!(session_id = %session_id, "cmd::get_terminal_replay_snapshot");
-    let backend = service.backend();
-    let snapshot = backend.get_session_replay_snapshot(&session_id)?;
+    let service = Arc::clone(service.inner());
+    let launch_history_service = Arc::clone(launch_history_service.inner());
+    let history_watch_manager = Arc::clone(history_watch_manager.inner());
+    run_terminal_blocking(move || {
+        debug!(session_id = %session_id, "cmd::get_terminal_replay_snapshot");
+        let backend = service.backend();
+        let snapshot = backend.get_session_replay_snapshot(&session_id)?;
 
-    if let Some(snapshot) = snapshot
-        .as_ref()
-        .filter(|_| service.kind() == TerminalBackendKind::Daemon)
-    {
-        if let Ok(Some(record)) = launch_history_service.find_by_pty_session_id(&session_id) {
-            if let Err(error) =
-                history_watch_manager.on_session_created(&session_id, &record.project_path)
-            {
-                warn!(session_id = %session_id, error = %error, "failed to restore local history watcher");
+        if let Some(snapshot) = snapshot
+            .as_ref()
+            .filter(|_| service.kind() == TerminalBackendKind::Daemon)
+        {
+            if let Ok(Some(record)) = launch_history_service.find_by_pty_session_id(&session_id) {
+                if let Err(error) =
+                    history_watch_manager.on_session_created(&session_id, &record.project_path)
+                {
+                    warn!(session_id = %session_id, error = %error, "failed to restore local history watcher");
+                }
             }
+            let bridge = app_handle.state::<Arc<TerminalDaemonEventBridge>>();
+            bridge.start_session_after_replay(session_id, backend, snapshot);
         }
-        let bridge = app_handle.state::<Arc<TerminalDaemonEventBridge>>();
-        bridge.start_session_after_replay(session_id, backend, snapshot);
-    }
 
-    Ok(snapshot)
+        Ok(snapshot)
+    }).await
 }
 
 #[cfg(test)]
@@ -938,37 +953,29 @@ mod tests {
     }
 
     #[test]
-    fn summarize_terminal_input_escapes_carriage_return() {
+    fn summarize_terminal_input_counts_control_characters_without_logging_them() {
         let summary = summarize_terminal_input("\r");
-
-        assert_eq!(summary["chars"][0], "\\r");
-        assert_eq!(summary["codePoints"][0], "d");
-        assert_eq!(summary["charCount"], 1);
-        assert_eq!(summary["utf8Bytes"], 1);
-        assert_eq!(summary["truncated"], false);
+        assert_eq!(summary, serde_json::json!({"charCount": 1, "utf8Bytes": 1}));
     }
 
     #[test]
-    fn summarize_terminal_input_truncates_long_input() {
-        let input = "a".repeat(30);
+    fn summarize_terminal_input_never_includes_input_text_or_bytes() {
+        let input = "private-input-marker".repeat(30);
         let summary = summarize_terminal_input(&input);
-
-        assert_eq!(summary["chars"].as_array().unwrap().len(), 24);
-        assert_eq!(summary["bytes"].as_array().unwrap().len(), 30);
-        assert_eq!(summary["charCount"], 30);
-        assert_eq!(summary["truncated"], true);
+        assert_eq!(summary.as_object().unwrap().len(), 2);
+        assert_eq!(summary["charCount"], input.chars().count());
+        assert_eq!(summary["utf8Bytes"], input.len());
+        assert!(!summary.to_string().contains("private-input-marker"));
     }
 
     #[test]
-    fn summarize_terminal_input_flags_truncation_on_wide_utf8() {
-        // 12 个中文字符 = 36 字节，超出 32 字节展示上限即视为截断
+    fn summarize_terminal_input_distinguishes_characters_and_utf8_bytes() {
         let input = "好".repeat(12);
         let summary = summarize_terminal_input(&input);
-
-        assert_eq!(summary["charCount"], 12);
-        assert_eq!(summary["utf8Bytes"], 36);
-        assert_eq!(summary["bytes"].as_array().unwrap().len(), 32);
-        assert_eq!(summary["truncated"], true);
+        assert_eq!(
+            summary,
+            serde_json::json!({"charCount": 12, "utf8Bytes": 36})
+        );
     }
 }
 
@@ -1006,6 +1013,18 @@ pub fn ack_terminal_output(
     if service.kind() == TerminalBackendKind::Daemon {
         crate::services::report_output_ack(session_id, processed_end_seq);
     }
+}
+
+/// 只读投递水位快照（卡住时对照前端 ACK / park 状态）。未知会话返回 null。
+#[tauri::command]
+pub async fn get_terminal_flow_diagnostics(
+    service: State<'_, Arc<TerminalBackendState>>,
+    session_id: String,
+) -> AppResult<Option<cc_panes_core::services::terminal_output_flow::OutputFlowDiagnostics>> {
+    let backend = service.backend();
+    tauri::async_runtime::spawn_blocking(move || backend.get_terminal_flow_diagnostics(&session_id))
+        .await
+        .map_err(|error| AppError::from(error.to_string()))
 }
 
 /// checkpoint+delta 结构化恢复快照（M3b-3）。

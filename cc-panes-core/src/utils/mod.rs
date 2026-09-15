@@ -1,5 +1,6 @@
 mod app_paths;
 pub mod atomic_file;
+pub mod binary_identity;
 pub mod claude_path;
 pub mod command;
 pub mod context_size;

@@ -13,8 +13,9 @@ use std::time::Duration;
 
 fn platform_sleep_command() -> String {
     if cfg!(target_os = "windows") {
-        // `;` 在 pwsh 与 Windows PowerShell 5.1 中均为语句分隔符（`&` 在 5.1 是语法错误）
-        "powershell -NoProfile -Command \"Start-Sleep -Seconds 5\"; exit".to_string()
+        // Exercise runner lifecycle without a user's PowerShell profile/history or
+        // PSReadLine cursor queries, which require a renderer this test does not own.
+        "powershell.exe -NoLogo -NoProfile -NonInteractive -Command \"Start-Sleep -Seconds 5\" & exit".to_string()
     } else {
         "sleep 5; exit".to_string()
     }
@@ -24,7 +25,14 @@ fn make_services(temp_dir: &tempfile::TempDir) -> (Arc<TerminalService>, RunnerS
     let app_paths = Arc::new(AppPaths::new(Some(
         temp_dir.path().join("app-data").display().to_string(),
     )));
-    let settings = Arc::new(SettingsService::new());
+    let settings = Arc::new(SettingsService::new_with_config_path(
+        temp_dir.path().join("config.toml"),
+    ));
+    let mut config = settings.get_settings();
+    config.terminal.shell = Some(if cfg!(windows) { "cmd" } else { "/bin/sh" }.into());
+    settings
+        .update_settings(config)
+        .expect("isolated runner settings");
     let provider = Arc::new(ProviderService::new(temp_dir.path().join("providers.json")));
     let cli_registry = Arc::new(CliToolRegistry::new());
     let hooks = Arc::new(ProjectCliHooksService::new(cli_registry.clone()));
@@ -63,22 +71,17 @@ async fn wait_for_session_pid(terminal: &TerminalService, session_id: &str) -> u
 }
 
 async fn wait_for_session_exit(terminal: &TerminalService, session_id: &str) {
-    for attempt in 0..200 {
-        let exited = terminal
-            .get_all_status()
-            .expect("status")
-            .into_iter()
-            .find(|status| status.session_id == session_id)
-            .map(|status| status.status.is_terminal())
-            .unwrap_or(false);
-        if exited {
-            return;
-        }
-        // 已知同形态卡死（CI 实测 flaky）：命令回显在提示符上但从未提交——
-        // PSReadLine 重绘期间 CR 被吞。补发一个裸 CR（与 WSL codex 未提交
-        // prompt 的处置同款），命令已在跑时多一个 CR 无害。
-        if attempt == 50 {
-            let _ = terminal.write(session_id, "\r");
+    for _ in 0..200 {
+        // Natural exits move out of the live list after their output is drained.
+        // The per-session endpoint retains the real exit status in dead_buffers.
+        if let Some(status) = terminal
+            .get_session_status(session_id)
+            .expect("session status")
+        {
+            if status.status.is_terminal() {
+                assert_eq!(status.exit_code, Some(0), "runner must exit naturally");
+                return;
+            }
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -91,6 +94,27 @@ async fn wait_for_session_exit(terminal: &TerminalService, session_id: &str) {
 }
 
 async fn submit_shell_command(terminal: &TerminalService, session_id: &str, command: &str) {
+    // A process id exists before ConPTY/cmd has installed its input handlers.
+    // Wait for the actual prompt, not an arbitrary delay or a replayed Enter.
+    #[cfg(windows)]
+    {
+        let mut ready = false;
+        for _ in 0..200 {
+            // The line API can omit the current unterminated prompt; raw replay includes it.
+            let output = terminal
+                .get_session_replay_snapshot(session_id)
+                .expect("shell output");
+            if output.is_some_and(|snapshot| snapshot.data.contains('>')) {
+                ready = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(
+            ready,
+            "fixture shell must display its prompt before submission"
+        );
+    }
     terminal
         .submit_text_to_session(session_id, command)
         .expect("submit shell command");

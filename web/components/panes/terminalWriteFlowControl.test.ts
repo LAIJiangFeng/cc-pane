@@ -129,91 +129,34 @@ describe("createTerminalWriteFlowControl", () => {
     await third;
   });
 
-  it("reset clears blocked state and lets pending writers continue", async () => {
+  it("disposal rejects every outstanding write and is terminal", async () => {
     const callbacks: Array<() => void> = [];
-    const target = {
-      write: vi.fn((_data: string, callback?: () => void) => {
-        if (callback) callbacks.push(callback);
-      }),
-    };
-
-    const flow = createTerminalWriteFlowControl(target, {
-      enabled: true,
-      bytesThreshold: 0,
-      highWatermark: 1,
-      lowWatermark: 0,
-    });
-
-    const first = flow.write("first");
-    await Promise.resolve();
+    const target = { write: vi.fn((_data: string, callback?: () => void) => callbacks.push(callback!)) };
+    const flow = createTerminalWriteFlowControl(target, { bytesThreshold: 1, highWatermark: 1 });
+    const first = flow.write("first").catch(error => error);
+    const queued = flow.write("queued").catch(error => error);
+    flow.dispose("unmounted");
+    expect(await first).toMatchObject({ name: "AbortError", message: "unmounted" });
+    expect(await queued).toMatchObject({ name: "AbortError" });
+    callbacks[0](); callbacks[0]();
+    await expect(flow.write("new")).rejects.toThrow("unmounted");
     expect(target.write).toHaveBeenCalledTimes(1);
-
-    const blockedWrite = flow.write("second");
-    await Promise.resolve();
-    expect(target.write).toHaveBeenCalledTimes(1);
-
-    flow.reset();
-    await Promise.resolve();
-    expect(target.write).toHaveBeenCalledTimes(2);
-
-    callbacks.shift()?.();
-    await first;
-    callbacks.shift()?.();
-    await blockedWrite;
+    expect(flow.getStats()).toMatchObject({ queuedChars: 0, inFlightChars: 0, pendingCallbacks: 0 });
   });
 
-  it("dispose 拒绝排队中的写入（否则卸载后 Promise 永不 settle）", async () => {
-    const target = {
-      write: vi.fn((_data: string, _callback?: () => void) => {
-        // 从不调 callback：模拟 xterm 卡住 / 视图卸载途中
-      }),
-    };
-
-    const flow = createTerminalWriteFlowControl(target, {
-      enabled: true,
-      bytesThreshold: 0,
-      highWatermark: 1,
-      lowWatermark: 0,
-    });
-
-    flow.write("in-flight");
-    const queued = flow.write("queued");
-    await Promise.resolve();
-    expect(flow.queueLength()).toBe(1);
-
-    // 这些 Promise 的等待方（terminalOutputHandler）在 catch 里归还流控信用；
-    // 不 reject 的话信用永远还不回去，上游窗口被永久缩小一截。
-    flow.dispose("terminal view unmounted");
-    await expect(queued).rejects.toThrow("terminal view unmounted");
-    expect(flow.queueLength()).toBe(0);
-  });
-
-  it("dispose 后可继续写入（reset 语义不被破坏）", async () => {
-    const callbacks: Array<() => void> = [];
-    const target = {
-      write: vi.fn((_data: string, callback?: () => void) => {
-        if (callback) callbacks.push(callback);
-      }),
-    };
-
-    const flow = createTerminalWriteFlowControl(target, {
-      enabled: true,
-      bytesThreshold: 0,
-      highWatermark: 1,
-      lowWatermark: 0,
-    });
-
-    flow.write("first");
-    const blocked = flow.write("blocked");
-    await Promise.resolve();
-    flow.dispose();
-    await expect(blocked).rejects.toThrow();
-
-    // 闸门已复位：新的写入立刻通过，而不是卡在 dispose 前的 blocked 状态
-    const after = flow.write("after");
-    await Promise.resolve();
-    expect(target.write).toHaveBeenCalledTimes(2);
-    callbacks.pop()?.();
-    await after;
+  it("reports a stalled parser once without unlocking or replaying old input", async () => {
+    vi.useFakeTimers();
+    try {
+      const onStall = vi.fn();
+      const flow = createTerminalWriteFlowControl({ write: vi.fn() }, { onStall });
+      const result = flow.write("small write below the credit threshold").catch(error => error);
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(await result).toBeInstanceOf(Error);
+      expect(onStall).toHaveBeenCalledTimes(1);
+      await expect(flow.write("new")).rejects.toThrow("no progress");
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(onStall).toHaveBeenCalledTimes(1);
+      expect(flow.getStats()).toMatchObject({ inFlightWrites: 0, queuedChars: 0 });
+    } finally { vi.useRealTimers(); }
   });
 });

@@ -8,10 +8,11 @@
 ; 卸载路径仍然全杀：那时用户就是要它们停。
 !macro CCPANES_KILL_INSTALLED_PROCESSES keepDaemon
   ; Resolve exact executable paths under this install directory, then taskkill by PID.
-  ; This keeps dev/release and side-by-side installs outside $INSTDIR untouched.
+  ; Update kills only each selected process: /T on the app would also kill its daemon child.
+  ; Uninstall still terminates the selected process trees.
   System::Call 'Kernel32::SetEnvironmentVariable(t, t) i("CCPANES_INSTALL_DIR", "$INSTDIR").r0'
   System::Call 'Kernel32::SetEnvironmentVariable(t, t) i("CCPANES_KEEP_DAEMON", "${keepDaemon}").r0'
-  nsExec::ExecToLog `powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "& { $$installDir = $$env:CCPANES_INSTALL_DIR; $$keep = $$env:CCPANES_KEEP_DAEMON -eq '1'; $$daemon = Join-Path $$installDir 'binaries\cc-panes-daemon.exe'; $$targets = @((Join-Path $$installDir 'cc-panes.exe'), (Join-Path $$installDir 'binaries\cc-panes-web.exe')); if (-not $$keep) { $$targets += $$daemon }; Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $$targets -contains $$PSItem.ExecutablePath } | ForEach-Object { $$targetPid = $$PSItem.ProcessId; & taskkill.exe /F /T /PID $$targetPid 2>$$null | Out-Null }; exit 0 }"`
+  nsExec::ExecToLog `powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "& { $$installDir = $$env:CCPANES_INSTALL_DIR; $$keep = $$env:CCPANES_KEEP_DAEMON -eq '1'; $$daemon = Join-Path $$installDir 'binaries\cc-panes-daemon.exe'; $$targets = @((Join-Path $$installDir 'cc-panes.exe'), (Join-Path $$installDir 'binaries\cc-panes-web.exe')); if (-not $$keep) { $$targets += $$daemon }; Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $$targets -contains $$PSItem.ExecutablePath } | ForEach-Object { $$targetPid = $$PSItem.ProcessId; if ($$keep) { & taskkill.exe /F /PID $$targetPid 2>$$null | Out-Null } else { & taskkill.exe /F /T /PID $$targetPid 2>$$null | Out-Null } }; exit 0 }"`
   Pop $0
 !macroend
 

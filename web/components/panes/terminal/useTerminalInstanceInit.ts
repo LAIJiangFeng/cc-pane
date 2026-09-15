@@ -1,6 +1,6 @@
+import { registerTerminalReplayFailureHandler } from "../terminalReplayPresentation";
 import { useEffect } from "react";
-// xterm 构造器不再静态取值（首屏 ~123kB gzip）：类型在这里 import type，
-// 运行时装配经 terminalXtermModules 的 loadXtermRuntime() 动态 import。
+// xterm 类型静态导入，实例装配通过 loadXtermRuntime 懒加载。
 import type { Terminal, IDisposable } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 import type { SerializeAddon } from "@xterm/addon-serialize";
@@ -23,8 +23,7 @@ import {
   createTerminalLayoutScheduler,
   type TerminalLayoutScheduler,
 } from "../terminalLayoutScheduler";
-// 渲染器控制器静态值引用 @xterm/addon-webgl，随 xterm 一起走动态边界
-// （见 terminalXtermModules.ts）；这里只留类型。
+// WebGL 随 xterm 懒加载；这里仅导入类型。
 import type { TerminalRendererController } from "../terminalRendererController";
 import { loadXtermRuntime } from "./terminalXtermModules";
 import { getCachedWindowsBuildNumber } from "../terminalWindows";
@@ -60,6 +59,7 @@ export interface UseTerminalInstanceInitParams {
   props: TerminalViewProps;
   t: TFunction<"panes">;
   instanceEpoch: number;
+  onRendererFailure: (error: Error) => void;
   isDark: boolean;
   xtermTheme: TerminalThemePalette;
   drivesBackendPty: boolean;
@@ -135,6 +135,7 @@ export function useTerminalInstanceInit({
   props,
   t,
   instanceEpoch,
+  onRendererFailure,
   isDark,
   xtermTheme,
   drivesBackendPty,
@@ -225,14 +226,11 @@ export function useTerminalInstanceInit({
       instanceEpoch,
     });
 
-    // 创建槽位（docs/78 批4）声明在 effect 作用域：卸载清理必须够得着它。
-    // 放在 init 内部时，「createSession 永不落定就被卸载」会让槽位永久泄漏
-    // ——那一格此后再也建不出会话，且没有任何报错。
+    // 创建槽位归 effect 所有，卸载时也能释放尚未结束的创建。
     const slot = createTerminalSlotHolder();
 
     const init = async () => {
-      // xterm 本体到用时才取回（首屏不再 modulepreload）。与下面的
-      // buildNumber / 字体等待并行发起，装配前在此汇合，启动时序不变。
+      // xterm 加载与 Windows 版本、字体等待并行。
       const xtermRuntimePromise = loadXtermRuntime();
 
       // Read the Windows build number once so xterm can enable ConPTY tuning.
@@ -243,9 +241,7 @@ export function useTerminalInstanceInit({
 
       if (!isMounted || !terminalRef.current) return;
 
-      // Wait for the configured font *before* constructing the terminal, so an
-      // unmount mid-await can't leak an unopened Terminal, and settings are
-      // re-read afterwards so a font change during the wait is not lost.
+      // Resolve the current font before allocating a terminal that may be unmounted.
       {
         const pending = useSettingsStore.getState().settings?.terminal;
         await waitForTerminalFont(
@@ -317,7 +313,13 @@ export function useTerminalInstanceInit({
       attachTerminalTuiWheelMultiplier(term);
       applyTerminalElementTheme(term, xtermTheme);
       focusReportModeRef.current = false;
-      writeFlowControlRef.current = createTerminalWriteFlowControl(term);
+      const onFailure = (error: Error) => {
+        if (!isMounted || terminalInstanceRef.current !== term) return;
+        writeFlowControlRef.current?.dispose(error.message);
+        onRendererFailure(error);
+      };
+      writeFlowControlRef.current = createTerminalWriteFlowControl(term, { onStall: onFailure });
+      parserDisposableRefs.current.push({ dispose: registerTerminalReplayFailureHandler(term, onFailure) });
       terminalInstanceRef.current = term;
       fitAddonRef.current = fit;
       layoutSchedulerRef.current = createTerminalLayoutScheduler({
@@ -424,9 +426,7 @@ export function useTerminalInstanceInit({
         isDisconnectedRef,
         isReconnectingRef,
         currentSessionIdRef,
-        readOnlyRef,
-        doReconnect,
-        t,
+        readOnlyRef, doReconnect, t,
       }));
 
       // Keep pane dragging responsive without fitting on every pointer move.

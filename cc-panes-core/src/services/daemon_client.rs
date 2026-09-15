@@ -39,6 +39,9 @@ pub struct TerminalDaemonManifest {
 pub struct TerminalDaemonStatus {
     pub status: String,
     pub version: String,
+    /// Hash captured by the daemon at startup. Missing on legacy daemons.
+    #[serde(default)]
+    pub binary_sha256: Option<String>,
     pub pid: u32,
     pub addr: String,
     pub started_at: u64,
@@ -289,6 +292,22 @@ impl TerminalDaemonClient {
 
     pub fn list_sessions(&self) -> AppResult<Vec<SessionStatusInfo>> {
         self.get_json("/api/sessions", true)
+    }
+
+    pub fn get_terminal_flow_diagnostics(
+        &self,
+        session_id: &str,
+    ) -> AppResult<Option<crate::services::terminal_output_flow::OutputFlowDiagnostics>> {
+        let response =
+            self.request("GET", &session_path(session_id, "/output-flow"), true, None)?;
+        let (status, body) = split_http_response(&response)?;
+        if status == 404 {
+            return Ok(None); // Legacy daemon does not expose this route.
+        }
+        if !(200..300).contains(&status) {
+            return Err(daemon_http_error(status, body));
+        }
+        serde_json::from_str(body).map_err(|error| AppError::from(error.to_string()))
     }
 
     pub fn get_session_status(&self, session_id: &str) -> AppResult<Option<SessionStatusInfo>> {
@@ -922,6 +941,46 @@ mod tests {
     use crate::services::terminal_service::SessionStatus;
 
     use super::*;
+
+    #[test]
+    fn legacy_daemon_status_without_binary_identity_remains_readable() {
+        let status: TerminalDaemonStatus = serde_json::from_str(
+            r#"{
+            "status":"ok", "version":"0.1.0", "pid":42,
+            "addr":"127.0.0.1:1", "startedAt":2000, "sessionCount":0
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(status.binary_sha256, None);
+    }
+
+    #[test]
+    fn flow_diagnostics_are_read_from_the_daemon_not_the_desktop() {
+        let flow = crate::services::terminal_output_flow::OutputFlowGate::new();
+        let body = serde_json::to_string(&flow.diagnostics("session-1")).unwrap();
+        let (addr, rx) = spawn_response_server(http_json_response("200 OK", &body));
+        let client = TerminalDaemonClient::new(addr.to_string(), "secret");
+        let diagnostics = client
+            .get_terminal_flow_diagnostics("session-1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(diagnostics.session_id, "session-1");
+        assert_eq!(diagnostics.in_flight_bytes, 0);
+        assert!(rx
+            .recv()
+            .unwrap()
+            .starts_with("GET /api/sessions/session-1/output-flow HTTP/1.1"));
+    }
+
+    #[test]
+    fn flow_diagnostics_missing_on_legacy_daemon_are_unavailable() {
+        let (addr, _rx) = spawn_response_server(http_json_response("404 Not Found", "{}"));
+        let client = TerminalDaemonClient::new(addr.to_string(), "secret");
+        assert!(client
+            .get_terminal_flow_diagnostics("session-1")
+            .unwrap()
+            .is_none());
+    }
 
     fn http_json_response(status: &str, body: &str) -> String {
         format!(
