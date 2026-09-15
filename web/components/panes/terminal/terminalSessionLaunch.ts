@@ -126,7 +126,11 @@ export async function launchOrAttachTerminalSession({
         await withTerminalReplayPresentation(term, async () => {
           await replayColdRestoreOutput(term, props.savedSessionId!, logRestoreEvent, debugLog, renderCheckpointData);
           // writeln queues parsing; keep the static frame until the final write callback.
-          await new Promise<void>((resolve) => term.write("", resolve));
+          // 回调丢失时不能永远盖着静态帧。
+          await Promise.race([
+            new Promise<void>((resolve) => term.write("", resolve)),
+            new Promise<void>((resolve) => setTimeout(resolve, 2000)),
+          ]);
         });
       }
 
@@ -243,11 +247,15 @@ export async function launchOrAttachTerminalSession({
               createdLaunchId,
             );
           }
+          const fitted = layoutSchedulerRef.current?.flush("session.create.prefit", {
+            force: true,
+            allowInactive: true,
+          });
           return terminalService.createSession({
             launchId: createdLaunchId,
             projectPath: props.projectPath,
-            cols: term.cols,
-            rows: term.rows,
+            cols: fitted ? term.cols : 80,
+            rows: fitted ? term.rows : 24,
             workspaceName: props.workspaceName,
             providerId: props.providerId,
             modelId: props.modelId,

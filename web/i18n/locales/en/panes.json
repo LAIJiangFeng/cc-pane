@@ -1,4 +1,6 @@
 {
+  "rendererRecoveryFailed": "The terminal display could not recover. Retrying restores the display without rerunning the task.",
+  "retryRendererRecovery": "Retry display recovery",
   "ready": "Ready",
   "selectProject": "Select a project from the sidebar to open a terminal",
   "startingTerminal": "Launching terminal",
@@ -199,6 +201,7 @@
   "tabGroupTools": "tool panels",
   "layoutPresets": "Layout presets",
   "layoutAgentChat": "Agent Chat",
+  "layoutAutomations": "Automations",
   "layoutPresetSingle": "Single",
   "layoutPresetTwoCol": "Two columns",
   "layoutPresetThreeCol": "Three columns",

@@ -3,9 +3,15 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   _resetListenersForTest,
   clearTerminalOutputDesyncLatch,
+  ensureListeners,
   setHiddenTerminalOutputSessions,
   terminalService,
 } from "./terminalService";
+import {
+  _resetOutputAckForTest,
+  _setOutputAckReporterForTest,
+} from "./terminalOutputAck";
+import { PENDING_BUFFER_MAX_CHARS } from "./terminalPendingBufferPolicy";
 import {
   mockTauriInvoke,
   mockTauriInvokeError,
@@ -22,6 +28,7 @@ describe("terminalService", () => {
     resetTauriInvoke();
     _resetListenersForTest();
     _resetTerminalRestoreBarrierForTest();
+    _resetOutputAckForTest();
     vi.useRealTimers();
   });
 
@@ -29,6 +36,7 @@ describe("terminalService", () => {
     vi.useRealTimers();
     _resetListenersForTest();
     _resetTerminalRestoreBarrierForTest();
+    _resetOutputAckForTest();
   });
 
   describe("多订阅分发（星标镜像：同一会话多视图）", () => {
@@ -121,6 +129,42 @@ describe("terminalService", () => {
 
       expect(a).not.toHaveBeenCalled();
       expect(b).not.toHaveBeenCalled();
+    });
+
+    it("acks buffered output when no subscriber is registered", async () => {
+      vi.useFakeTimers();
+      const acks: Array<{ sessionId: string; processedEndSeq: number }> = [];
+      _setOutputAckReporterForTest((sessionId, processedEndSeq) => {
+        acks.push({ sessionId, processedEndSeq });
+      });
+      mockTauriInvoke({});
+      await ensureListeners();
+      const handler = await getOutputHandler();
+      handler({ payload: { sessionId: "s-ack-none", data: "hello", endSeq: 42 } });
+      await vi.advanceTimersByTimeAsync(50);
+      expect(acks).toEqual([{ sessionId: "s-ack-none", processedEndSeq: 42 }]);
+    });
+
+    it("acks discarded pending output after overflow", async () => {
+      vi.useFakeTimers();
+      const acks: number[] = [];
+      _setOutputAckReporterForTest((_sessionId, processedEndSeq) => {
+        acks.push(processedEndSeq);
+      });
+      mockTauriInvoke({});
+      await ensureListeners();
+      const handler = await getOutputHandler();
+      handler({
+        payload: {
+          sessionId: "s-ack-discard",
+          data: "x".repeat(PENDING_BUFFER_MAX_CHARS + 1),
+          endSeq: 100,
+        },
+      });
+      expect(acks).toContain(100);
+      handler({ payload: { sessionId: "s-ack-discard", data: "late", endSeq: 108 } });
+      await vi.advanceTimersByTimeAsync(50);
+      expect(acks[acks.length - 1]).toBe(108);
     });
 
     it("exit event reaches every exit subscriber", async () => {
@@ -348,7 +392,19 @@ describe("terminalService", () => {
   });
 
   describe("write", () => {
-    it("batches rapid terminal input for the same session", async () => {
+    it.each(["a", "你", "\x7f", "\r"])("dispatches idle keyboard input %j without a timer", async (data) => {
+      vi.useFakeTimers();
+      mockTauriInvoke({ write_terminal: undefined, record_terminal_input: undefined });
+
+      const write = terminalService.write("session-1", data);
+
+      expect(invoke).toHaveBeenCalledWith("write_terminal", {
+        sessionId: "session-1", data, source: "user-keyboard",
+      });
+      await write;
+    });
+
+    it("sends the first key immediately and coalesces input while its write is in flight", async () => {
       vi.useFakeTimers();
       mockTauriInvoke({ write_terminal: undefined, record_terminal_input: undefined });
 
@@ -356,17 +412,58 @@ describe("terminalService", () => {
       const second = terminalService.write("session-1", "b");
       const third = terminalService.write("session-1", "c");
 
-      await vi.advanceTimersByTimeAsync(8);
       await Promise.all([first, second, third]);
 
-      // 同源的三段仍合成一次写入；source 随请求过去，后端据此决定回显开着时
-      // 该不该抑制（用户按键不抑制，前端代答的查询回复才抑制）。
+      const writes = vi.mocked(invoke).mock.calls.filter(([cmd]) => cmd === "write_terminal");
+      expect(writes.map(([, args]) => args)).toEqual([
+        { sessionId: "session-1", data: "a", source: "user-keyboard" },
+        { sessionId: "session-1", data: "bc", source: "user-keyboard" },
+      ]);
+    });
+
+    it("retains batching for non-keyboard writes", async () => {
+      vi.useFakeTimers();
+      mockTauriInvoke({ write_terminal: undefined });
+
+      const first = terminalService.write("session-1", "a", { source: "system" });
+      const second = terminalService.write("session-1", "b", { source: "system" });
+      expect(invoke).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(8);
+      await Promise.all([first, second]);
+      expect(invoke).toHaveBeenCalledExactlyOnceWith("write_terminal", {
+        sessionId: "session-1", data: "ab", source: "system",
+      });
+    });
+
+    it("flushes a queued query before a key without mixing their sources", async () => {
+      vi.useFakeTimers();
+      mockTauriInvoke({ write_terminal: undefined, record_terminal_input: undefined });
+
+      const query = terminalService.write("session-1", "\x1b[1;1R", { source: "system" });
+      const key = terminalService.write("session-1", "你");
+      expect(invoke).toHaveBeenCalledWith("write_terminal", {
+        sessionId: "session-1", data: "\x1b[1;1R", source: "system",
+      });
+      await Promise.all([query, key]);
+      const writes = vi.mocked(invoke).mock.calls.filter(([cmd]) => cmd === "write_terminal");
+      expect(writes.map(([, args]) => args)).toEqual([
+        { sessionId: "session-1", data: "\x1b[1;1R", source: "system" },
+        { sessionId: "session-1", data: "你", source: "user-keyboard" },
+      ]);
+    });
+
+    it("flushes an IME commit without waiting for the keyboard batch", async () => {
+      vi.useFakeTimers();
+      mockTauriInvoke({ write_terminal: undefined, record_terminal_input: undefined });
+
+      const write = terminalService.write("session-1", "你", { flushImmediately: true });
       expect(invoke).toHaveBeenCalledWith("write_terminal", {
         sessionId: "session-1",
-        data: "abc",
+        data: "你",
         source: "user-keyboard",
       });
-      expect((invoke as ReturnType<typeof vi.fn>).mock.calls.filter(([cmd]) => cmd === "write_terminal")).toHaveLength(1);
+      await write;
+      vi.useRealTimers();
     });
 
     it("preserves per-session input order across flushes", async () => {
@@ -386,17 +483,14 @@ describe("terminalService", () => {
       });
 
       const first = terminalService.write("session-1", "a");
-      await vi.advanceTimersByTimeAsync(8);
       expect(writes).toEqual(["a"]);
 
       const second = terminalService.write("session-1", "b");
       const third = terminalService.write("session-1", "c");
-      await vi.advanceTimersByTimeAsync(8);
       expect(writes).toEqual(["a"]);
 
       resolvers.shift()?.();
       await first;
-      await vi.runOnlyPendingTimersAsync();
       expect(writes).toEqual(["a", "bc"]);
 
       resolvers.shift()?.();

@@ -1,10 +1,19 @@
-import { AlertTriangle, LoaderCircle } from "lucide-react";
+import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
-import AlertBannerShell, {
-  alertBannerDescClass,
-  alertBannerTitleClass,
-} from "@/components/layout/AlertBannerShell";
 import { useOrchestratorStatus } from "@/hooks/useOrchestratorStatus";
+import {
+  normalizeNotification,
+  useNotificationStore,
+} from "@/stores/useNotificationStore";
+import type { OrchestratorStatus } from "@/types";
+
+/** 稳定 id：同一故障周期内更新正文，不刷屏。 */
+export const ORCHESTRATOR_ALERT_NOTIFICATION_ID = "orchestrator-mcp-alert";
+
+function isOrchestratorAlerting(status: OrchestratorStatus | null): boolean {
+  if (!status || status.lifecycle === "ready") return false;
+  return !(status.lifecycle === "binding" && status.lastError == null);
+}
 
 function formatRetryTime(timestamp: number | null): string | null {
   if (timestamp == null) return null;
@@ -15,54 +24,59 @@ function formatRetryTime(timestamp: number | null): string | null {
   });
 }
 
+/**
+ * MCP 编排器起不来时发到右下角通知中心（可关闭），不再占顶部通栏。
+ * 本组件不渲染 DOM，只把 lifecycle 同步成一张稳定 id 的通知卡。
+ */
 export default function OrchestratorAlertBanner() {
   const { t } = useTranslation("settings");
   const status = useOrchestratorStatus();
-
-  if (
-    !status ||
-    status.lifecycle === "ready" ||
-    (status.lifecycle === "binding" && status.lastError == null)
-  ) {
-    return null;
-  }
-
-  const failed = status.lifecycle === "failed";
-  const retryTime = formatRetryTime(status.nextRetryAt);
-  const Icon = failed ? AlertTriangle : LoaderCircle;
-
-  return (
-    <AlertBannerShell
-      tone={failed ? "danger" : "warning"}
-      role={failed ? "alert" : "status"}
-      ariaLive={failed ? "assertive" : "polite"}
-      icon={
-        <Icon className={`size-3.5 ${failed ? "" : "animate-spin"}`} strokeWidth={1.6} />
-      }
-    >
-      <p className={alertBannerTitleClass}>
-        {failed
-          ? t("orchestratorAlert.failedTitle")
-          : retryTime
-            ? t("orchestratorAlert.retrying", {
-                attempt: status.attempt,
-                time: retryTime,
-              })
-            : t("orchestratorAlert.attempting", { attempt: status.attempt })}
-      </p>
-      <p className={alertBannerDescClass}>
-        {t("orchestratorAlert.impact")} {t("orchestratorAlert.escapePrefix")}{" "}
-        <code className="font-mono text-[var(--app-text-primary)]">CC_PANES_ORCHESTRATOR_PORT</code>{" "}
-        {t("orchestratorAlert.escapeSuffix")}
-      </p>
-      {failed && status.lastError && (
-        <details className="mt-1 text-[11px] text-[var(--app-text-secondary)]">
-          <summary className="w-fit cursor-pointer rounded-sm transition-colors duration-[var(--dur-fast)] ease-[var(--ease-out)] hover:text-[var(--app-text-primary)]">
-            {t("orchestratorAlert.errorDetails")}
-          </summary>
-          <p className="m-0 mt-1 whitespace-pre-wrap break-words font-mono">{status.lastError}</p>
-        </details>
-      )}
-    </AlertBannerShell>
+  const alertVisible = useNotificationStore((state) =>
+    state.activeToastIds.includes(ORCHESTRATOR_ALERT_NOTIFICATION_ID),
   );
+  const dismissedThisEpisode = useRef(false);
+  const shownThisEpisode = useRef(false);
+  const alerting = isOrchestratorAlerting(status);
+
+  useEffect(() => {
+    const store = useNotificationStore.getState();
+    if (!alerting || !status) {
+      dismissedThisEpisode.current = false;
+      shownThisEpisode.current = false;
+      if (store.activeToastIds.includes(ORCHESTRATOR_ALERT_NOTIFICATION_ID)) {
+        store.dismissToast(ORCHESTRATOR_ALERT_NOTIFICATION_ID);
+      }
+      return;
+    }
+
+    if (dismissedThisEpisode.current) return;
+    if (shownThisEpisode.current && !alertVisible) {
+      dismissedThisEpisode.current = true;
+      return;
+    }
+
+    const retryTime = formatRetryTime(status.nextRetryAt);
+    const title = status.lifecycle === "failed"
+      ? t("orchestratorAlert.failedTitle")
+      : retryTime
+        ? t("orchestratorAlert.retrying", { attempt: status.attempt, time: retryTime })
+        : t("orchestratorAlert.attempting", { attempt: status.attempt });
+    const body = [t("orchestratorAlert.notificationBody"), status.lastError]
+      .filter((part): part is string => Boolean(part && part.trim()))
+      .join("\n\n");
+
+    store.upsert(
+      normalizeNotification({
+        id: ORCHESTRATOR_ALERT_NOTIFICATION_ID,
+        kind: "orchestrator_failed",
+        title,
+        body,
+        source: "MCP",
+      }),
+    );
+    store.showToast(ORCHESTRATOR_ALERT_NOTIFICATION_ID);
+    shownThisEpisode.current = true;
+  }, [alerting, status, t, alertVisible]);
+
+  return null;
 }

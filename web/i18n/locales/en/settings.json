@@ -872,6 +872,11 @@
   "presetXaiName": "xAI",
   "presetXaiDesc": "Official xAI API key for Grok CLI",
   "fromPreset": "From Preset",
+  "importFromCcSwitch": "Import from cc-switch",
+  "ccSwitchImportOk": "Imported {{imported}} providers from cc-switch, skipped {{skipped}} already present",
+  "ccSwitchImportDuplicatesOnly": "All cc-switch providers already exist; nothing new was added",
+  "ccSwitchImportNone": "No copyable providers found in cc-switch",
+  "ccSwitchImportFailed": "Failed to import from cc-switch: {{error}}",
   "manualConfig": "Manual",
   "getApiKey": "Get API Key",
   "selectPresetOrCustom": "Select a preset or create a custom configuration",
@@ -938,7 +943,8 @@
     "impact": "Injected CLI sessions cannot use the MCP tools.",
     "escapePrefix": "Release the fixed port and restart, or set the escape-hatch environment variable",
     "escapeSuffix": "to another fixed port and restart the app.",
-    "errorDetails": "Error details"
+    "errorDetails": "Error details",
+    "notificationBody": "Injected CLI sessions cannot use MCP tools. Free the fixed port and restart, or set CC_PANES_ORCHESTRATOR_PORT to another fixed port and restart the app."
   },
   "automations": {
     "title": "Automations",

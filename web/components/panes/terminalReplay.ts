@@ -4,6 +4,7 @@ import { writeTerminalReplay } from "./terminalReplayChunks";
 import { restoreReplayBufferMode } from "./terminalReplayBufferMode";
 import { withTerminalReplayPresentation, type ReplayPresentationTerminal } from "./terminalReplayPresentation";
 import { checkpointRecoveredTerminal } from "./terminalRecoveryCheckpoint";
+import { restoreTerminalReplayGeometry } from "./terminalReplayGeometry";
 
 type ReplayTerminal = ReplayPresentationTerminal;
 type ReplayLogger = (event: string, payload?: Record<string, unknown>) => void;
@@ -75,6 +76,7 @@ async function restoreAttachedSnapshot({
 
   // 双管道（裁决 B）：photo 直写、delta 过 renderTerminalData。
   if (snapshot.checkpoint) {
+    restoreTerminalReplayGeometry(term, snapshot.checkpoint);
     await writeTerminalReplay(snapshot.checkpoint.snapshotAnsi, writeCheckpointData, { canWrite });
   } else {
     await restoreReplayBufferMode(snapshot, term, writeData, canWrite);

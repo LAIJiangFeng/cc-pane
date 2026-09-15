@@ -10,7 +10,9 @@
  * （置 overflow），唤醒时改走后端 replay snapshot——比带缺口回放的必然花屏严格更好。
  */
 
-export interface HibernatedTerminalState {
+import type { TerminalReplayGeometry } from "./terminalReplayGeometry";
+
+export interface HibernatedTerminalState extends TerminalReplayGeometry {
   readonly sessionId: string;
   /** 追加休眠期间到达的**已渲染**（过 renderTerminalData）chunk。 */
   appendRendered(chunk: string): void;
@@ -30,7 +32,7 @@ export interface HibernatedTerminalState {
 /** 休眠容器总上限（基底 + 追加）。超过即作废，唤醒走后端 snapshot。 */
 export const HIBERNATED_MAX_CHARS = 4 * 1024 * 1024;
 
-interface CreateHibernatedTerminalStateOptions {
+interface CreateHibernatedTerminalStateOptions extends TerminalReplayGeometry {
   sessionId: string;
   /** serialize() 产物 + 休眠时点的积压，作为回放基底。 */
   base: string;
@@ -41,6 +43,8 @@ interface CreateHibernatedTerminalStateOptions {
 export function createHibernatedTerminalState({
   sessionId,
   base,
+  cols,
+  rows,
   maxChars = HIBERNATED_MAX_CHARS,
   onOverflow,
 }: CreateHibernatedTerminalStateOptions): HibernatedTerminalState {
@@ -61,6 +65,8 @@ export function createHibernatedTerminalState({
 
   return {
     sessionId,
+    cols,
+    rows,
 
     appendRendered(chunk: string): void {
       if (overflowed || !chunk) return;

@@ -872,6 +872,11 @@
   "presetXaiName": "xAI",
   "presetXaiDesc": "Grok CLI 官方 xAI API Key",
   "fromPreset": "从预设创建",
+  "importFromCcSwitch": "从 cc-switch 导入",
+  "ccSwitchImportOk": "已从 cc-switch 导入 {{imported}} 个供应商，跳过 {{skipped}} 个已存在",
+  "ccSwitchImportDuplicatesOnly": "cc-switch 中的供应商都已存在，未新增",
+  "ccSwitchImportNone": "cc-switch 里没有可抄入的供应商",
+  "ccSwitchImportFailed": "从 cc-switch 导入失败：{{error}}",
   "manualConfig": "手动配置",
   "getApiKey": "获取 API Key",
   "selectPresetOrCustom": "选择预设或自定义配置",
@@ -938,7 +943,8 @@
     "impact": "已注入的 CLI 会话无法使用 MCP 工具。",
     "escapePrefix": "请释放固定端口后重启，或设置逃生阀环境变量",
     "escapeSuffix": "为另一个确定端口后重启应用。",
-    "errorDetails": "错误详情"
+    "errorDetails": "错误详情",
+    "notificationBody": "已注入的 CLI 会话无法使用 MCP 工具。请释放固定端口后重启，或设置 CC_PANES_ORCHESTRATOR_PORT 为另一个确定端口后重启应用。"
   },
   "automations": {
     "title": "自动化",

@@ -311,28 +311,21 @@ export function createTerminalRendererController({
           height: canvas.height,
           dpr: getDevicePixelRatio(),
         });
-        // 共享 atlas 结构变化 → 所有共享 pane 丢掉 skip 缓存再 refresh。
-        // 只 refresh 会留下旧 UV（颜色对、字形碎）。
-        notifyAtlasStructureChanged();
+        notifyAtlasStructureChanged(addon);
       }),
       addon.onAddTextureAtlasCanvas((canvas) => {
         atlasCanvasCount += 1;
         logger("renderer.webgl.atlas.add-canvas", {
-          atlasCanvasCount,
-          width: canvas.width,
-          height: canvas.height,
+          atlasCanvasCount, width: canvas.width, height: canvas.height,
         });
-        // 加页/_mergePages 同理：所有共享该 atlas 的 renderer 都需重建顶点。
-        notifyAtlasStructureChanged();
+        notifyAtlasStructureChanged(addon);
       }),
       addon.onRemoveTextureAtlasCanvas((canvas) => {
         atlasCanvasCount = Math.max(0, atlasCanvasCount - 1);
         logger("renderer.webgl.atlas.remove-canvas", {
-          atlasCanvasCount,
-          width: canvas.width,
-          height: canvas.height,
+          atlasCanvasCount, width: canvas.width, height: canvas.height,
         });
-        notifyAtlasStructureChanged();
+        notifyAtlasStructureChanged(addon);
       }),
     ];
 

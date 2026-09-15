@@ -7,7 +7,7 @@ import { shouldTerminalHandleKey } from "@/stores";
 import { copyTerminalSelection } from "../terminalClipboard";
 import type { attachTerminalImeGuard } from "../terminalImeGuard";
 import { isTerminalCopyShortcut, isTerminalPasteShortcut } from "../terminalKeyboard";
-import { IS_MAC } from "../terminalViewHelpers";
+import { IS_MAC, IS_WINDOWS } from "../terminalViewHelpers";
 
 export interface TerminalCustomKeyHandlerDeps {
   term: Terminal;
@@ -30,10 +30,12 @@ export function createTerminalCustomKeyHandler({
       return false;
     }
 
-    // Intel Mac 的旧版 WKWebView 仍会把组合期间的 keydown 传到 xterm，必须在
-    // 粘贴、复制和快捷键判断之前放行给隐藏 textarea，避免打断 IME。
+    // Windows must reach xterm's own CompositionHelper before app shortcuts.
+    // Returning false here skips that helper, including its keyCode 229 path
+    // for IME punctuation inserted without compositionstart. Keep the existing
+    // WebKit workaround on other platforms.
     if (e.isComposing || e.keyCode === 229) {
-      return false;
+      return IS_WINDOWS;
     }
 
     if (isTerminalPasteShortcut(e, IS_MAC)) {

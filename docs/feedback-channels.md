@@ -9,7 +9,7 @@
 |------|-----------|------|----------|------------|
 | Toast（瞬时提示） | sonner `<Toaster>`，业务经 `web/lib/feedback.ts` | 底部居中（`bottom-center`，offset 避开 StatusBar） | 自动消失（3–6s） | 否 |
 | 通知中心（异步事件） | `web/components/notifications/NotificationCenter.tsx` + `useNotificationStore` | 右下角卡片栈 + 历史面板 | 卡片自动消失（error/askInput 常驻），历史保留 | 是 |
-| Banner（阻断性告警） | `web/components/layout/AlertBannerShell.tsx`（OrchestratorAlertBanner、RestoreRegressionBanner 已收敛于此） | 主区顶部通栏 | 条件存续期间常驻，需用户处置或状态解除才消失 | 是（存续期间） |
+| Banner（阻断性告警） | `web/components/layout/AlertBannerShell.tsx`（RestoreRegressionBanner） | 主区顶部通栏 | 条件存续期间常驻，需用户处置或状态解除才消失 | 是（存续期间） |
 | Inline（表单/字段错误） | 各表单组件就地渲染 | 出错字段旁 | 随输入修正即时消除 | 是（存续期间） |
 
 ## 判定标准
@@ -18,7 +18,7 @@
 
 1. **是否阻断当前流程、或属于会话/应用级告警？**
    是 → **Banner**。特征：用户不处理就无法（或不应）继续；与具体某个输入框无关。
-   例：编排器异常、恢复回归告警、许可证/只读模式。
+   例：恢复回归告警、许可证/只读模式。编排器 MCP 起不来走通知中心（可关闭，不占通栏）。
 2. **是否属于表单提交或字段级校验失败？**
    是 → **Inline**。错误必须定位到具体字段，随输入修正即时消除；不要用 toast 报表单错误。
 3. **是否需要可回看、可操作（回复/跳转/重试）的异步事件？**

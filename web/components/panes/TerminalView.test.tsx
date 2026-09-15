@@ -159,9 +159,17 @@ vi.mock("./terminalRendererController", () => ({
 }));
 
 vi.mock("./terminalLayoutScheduler", () => ({
-  createTerminalLayoutScheduler: vi.fn(() => ({
+  createTerminalLayoutScheduler: vi.fn((options) => ({
     schedule: vi.fn(),
-    flush: vi.fn(),
+    redrawBackend: vi.fn(),
+    flush: vi.fn((_reason, request) => {
+      const term = options.getTerminal();
+      options.getFitAddon()?.fit();
+      if (term && options.getSessionId() && options.canResizeBackend?.() && request?.forceBackendSync) {
+        options.resizeBackend(term.cols, term.rows);
+      }
+      return term;
+    }),
     cancel: vi.fn(),
     dispose: vi.fn(),
   })),
@@ -173,7 +181,8 @@ vi.mock("./terminalRenderer", () => ({
 }));
 
 vi.mock("./terminalInputTrace", () => ({
-  attachTerminalInputTrace: vi.fn(() => ({ dispose: vi.fn(), onData: vi.fn() })),
+  attachTerminalInputTrace: vi.fn(() => ({ enabled: false, dispose: vi.fn(), onData: vi.fn() })),
+  isTerminalInputTraceEnabled: vi.fn(() => false),
   summarizeTerminalInputData: vi.fn((data: unknown) => String(data)),
 }));
 
@@ -843,6 +852,7 @@ describe("TerminalView", () => {
     };
     expect(scheduler.flush).toHaveBeenCalledWith("session.deferred-restore.attach.fit", {
       force: true,
+      forceBackendSync: true,
       allowInactive: true,
     });
   });
@@ -1402,6 +1412,7 @@ describe("TerminalView", () => {
     const schedulerResults = vi.mocked(createTerminalLayoutScheduler).mock.results;
     const scheduler = schedulerResults[schedulerResults.length - 1]?.value as {
       flush: ReturnType<typeof vi.fn>;
+      redrawBackend: ReturnType<typeof vi.fn>;
     };
 
     resize.mockClear();
@@ -1415,69 +1426,11 @@ describe("TerminalView", () => {
       allowInactive: true,
     });
 
-    // 渲染层重画救不了 buffer 级错乱（docs/73），必须同时向 CLI 抖一次 SIGWINCH：
-    // 先缩一列，再抖回原宽度。
-    const nudgeIndex = await waitForResizeCall({
-      sessionId: "new-session-1",
-      cols: 79,
-      rows: 24,
-    });
-    await waitForResizeCall(
-      { sessionId: "new-session-1", cols: 80, rows: 24 },
-      nudgeIndex + 1,
-    );
+    expect(scheduler.redrawBackend).toHaveBeenCalledTimes(1);
 
     fireEvent.contextMenu(host!);
     await user.click(await screen.findByRole("menuitem", { name: /复制会话 ID|Copy Session ID/i }));
     await waitFor(() => expect(vi.mocked(writeText)).toHaveBeenCalledWith("new-session-1"));
-  });
-
-  it("refresh returns the actual geometry when a resize lands during the SIGWINCH nudge", async () => {
-    const user = userEvent.setup();
-    const view = renderTerminalView();
-    await waitFor(() => expect(createSession).toHaveBeenCalled());
-    await waitFor(() => expect(registerOutput).toHaveBeenCalled());
-    const term = await lastTerm();
-    const host = view.container.querySelector(".cc-terminal-host");
-    expect(host).not.toBeNull();
-
-    // Wait for the initial fit before clearing the mock; otherwise a delayed
-    // session-creation resize can be mistaken for the refresh nudge below.
-    await waitForResizeCall({ sessionId: "new-session-1", cols: 80, rows: 24 });
-    resize.mockClear();
-    const defaultResize = resize.getMockImplementation();
-    let refreshStarted = false;
-    let geometryChanged = false;
-    resize.mockImplementation((request) => {
-      const result = defaultResize?.(request) ?? Promise.resolve();
-      // The production nudge schedules its second resize 80ms later. Mutate
-      // xterm synchronously when the first nudge lands so worker starvation
-      // cannot make the test miss that window.
-      if (
-        refreshStarted
-        && !geometryChanged
-        && request.sessionId === "new-session-1"
-        && request.cols === 79
-        && request.rows === 24
-      ) {
-        geometryChanged = true;
-        term.cols = 79;
-        term.rows = 23;
-      }
-      return result;
-    });
-    refreshStarted = true;
-    fireEvent.contextMenu(host!);
-    await user.click(await screen.findByRole("menuitem", { name: /刷新终端|Refresh Terminal/i }));
-    const nudgeIndex = await waitForResizeCall({
-      sessionId: "new-session-1",
-      cols: 79,
-      rows: 24,
-    });
-    await waitForResizeCall(
-      { sessionId: "new-session-1", cols: 79, rows: 23 },
-      nudgeIndex + 1,
-    );
   });
 
   it("mirror panes never send the refresh SIGWINCH to the shared PTY", async () => {

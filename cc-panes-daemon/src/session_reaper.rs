@@ -14,6 +14,7 @@ pub struct ReaperEntry {
     pub session_id: String,
     pub last_viewer_activity: Instant,
     pub has_active_subscriber: bool,
+    pub has_live_owner: bool,
     pub status: SessionStatus,
     pub last_output_at: u64,
 }
@@ -31,6 +32,7 @@ pub fn select_expired(
         .iter()
         .filter(|entry| {
             !entry.has_active_subscriber
+                && !entry.has_live_owner
                 && !is_reap_protected_status(entry.status)
                 && now.saturating_duration_since(entry.last_viewer_activity) > ttl
                 && now_epoch_millis.saturating_sub(entry.last_output_at) > ttl_millis
@@ -121,6 +123,7 @@ pub fn spawn_session_reaper(config: DaemonConfig, settings: Arc<SettingsService>
                     session_id: id,
                     last_viewer_activity: last_activity,
                     has_active_subscriber: has_subscriber,
+                    has_live_owner: config.session_claim_owner(&session.session_id).is_some(),
                     status: session.status,
                     last_output_at: session.last_output_at,
                 }
@@ -131,7 +134,7 @@ pub fn spawn_session_reaper(config: DaemonConfig, settings: Arc<SettingsService>
             // TOCTOU 复检：select 快照与 kill 之间用户可能重新打开该 pane
             // （新建 WS 订阅或 HTTP 访问会 touch 活动时间）。杀前用**实时**状态再确认
             // 一次，避免误杀刚被接管的会话。
-            if config.has_active_subscriber(&id) {
+            if config.has_active_subscriber(&id) || config.session_claim_owner(&id).is_some() {
                 info!(session_id = %id, "reap skipped: viewer reattached before kill");
                 continue;
             }
@@ -146,6 +149,16 @@ pub fn spawn_session_reaper(config: DaemonConfig, settings: Arc<SettingsService>
                 continue;
             }
 
+            let fresh = match config.terminal_backend().get_session_status(&id) {
+                Ok(Some(status)) => status,
+                _ => continue,
+            };
+            if is_reap_protected_status(fresh.status)
+                || current_epoch_millis().saturating_sub(fresh.last_output_at)
+                    <= ttl.as_millis() as u64
+            {
+                continue;
+            }
             info!(
                 session_id = %id,
                 ttl_minutes,
@@ -156,6 +169,7 @@ pub fn spawn_session_reaper(config: DaemonConfig, settings: Arc<SettingsService>
                 .kill_with_reason(&id, KillReason::DaemonReaper)
             {
                 warn!(session_id = %id, error = %error, "failed to reap session");
+                continue;
             }
             config.remove_session_activity(&id);
         }
@@ -179,9 +193,26 @@ mod tests {
             session_id: id.to_string(),
             last_viewer_activity: now - viewer_age,
             has_active_subscriber: subscribed,
+            has_live_owner: false,
             status,
             last_output_at: now_epoch_millis.saturating_sub(output_age.as_millis() as u64),
         }
+    }
+
+    #[test]
+    fn a_live_claim_protects_an_unsubscribed_idle_session() {
+        let now = Instant::now();
+        let mut owned = entry(
+            "owned",
+            Duration::from_secs(3600),
+            Duration::from_secs(3600),
+            now,
+            10_000_000,
+            false,
+            SessionStatus::Idle,
+        );
+        owned.has_live_owner = true;
+        assert!(select_expired(&[owned], Duration::from_secs(60), now, 10_000_000).is_empty());
     }
 
     #[test]

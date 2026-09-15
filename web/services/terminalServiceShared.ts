@@ -24,6 +24,8 @@ export interface TerminalBackendClientInfo {
 export interface TerminalWriteOptions {
   source?: TerminalWriteSource;
   traceId?: number;
+  /** Bypass batching for non-keyboard writes too; keyboard input already flushes immediately. */
+  flushImmediately?: boolean;
 }
 
 export interface QueuedTerminalInput {
@@ -57,6 +59,7 @@ export function splitInputRunsBySource(
 }
 
 export interface TerminalInputQueue {
+  retainedChars: number;
   pending: QueuedTerminalInput[];
   timer: ReturnType<typeof setTimeout> | null;
   flushing: boolean;
@@ -64,14 +67,7 @@ export interface TerminalInputQueue {
 }
 
 export function summarizeTerminalInput(data: string): Record<string, unknown> {
-  const chars = Array.from(data);
-  return {
-    text: chars.length > 24 ? `${chars.slice(0, 24).join("")}...` : data,
-    length: chars.length,
-    utf16Length: data.length,
-    codePoints: chars.slice(0, 24).map((char) => char.codePointAt(0)?.toString(16) ?? ""),
-    truncated: chars.length > 24,
-  };
+  return { utf16Length: data.length };
 }
 
 const TERMINAL_SERVICE_DEBUG = import.meta.env.DEV;

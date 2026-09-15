@@ -47,6 +47,8 @@ interface NotificationStoreState {
   cleanup: () => void;
   /** 入历史（未读）。是否弹卡片由调用方过闸门后再 showToast。 */
   add: (notification: NotificationRecord) => void;
+  /** 同 id 则替换（保留栈位），否则与 add 相同。系统告警用稳定 id 更新正文。 */
+  upsert: (notification: NotificationRecord) => void;
   /** 过闸门后把通知提升到右下角栈；askInput 优先占位，其余按时间；超容折叠 */
   showToast: (id: string) => void;
   /** 移出栈并标已读；历史保留 */
@@ -186,6 +188,33 @@ export const useNotificationStore = create<NotificationStoreState>((set, get) =>
       return {
         notifications: next,
         // ring 截断掉的旧通知同步移出栈，防止栈里挂着已不存在的 id
+        activeToastIds: state.activeToastIds.filter((id) => next.some((n) => n.id === id)),
+      };
+    });
+  },
+
+  upsert: (notification) => {
+    set((state) => {
+      const existing = state.notifications.find((item) => item.id === notification.id);
+      if (existing) {
+        if (
+          existing.title === notification.title
+          && existing.body === notification.body
+          && existing.kind === notification.kind
+          && existing.source === notification.source
+        ) {
+          return state;
+        }
+        const next = state.notifications.map((item) =>
+          item.id === notification.id ? notification : item,
+        );
+        writeStoredNotifications(next);
+        return { notifications: next };
+      }
+      const next = [notification, ...state.notifications].slice(0, MAX_NOTIFICATIONS);
+      writeStoredNotifications(next);
+      return {
+        notifications: next,
         activeToastIds: state.activeToastIds.filter((id) => next.some((n) => n.id === id)),
       };
     });

@@ -11,6 +11,15 @@
 
 v0.12.17 之后的开发分支。
 
+### 修复
+
+- 左下角布局浮层可以往下拉长，不再卡在列表内容高度上。列表已经撑满时下缘把手也能继续加高。
+- 拼音选字结束后，如果终端行列没变，不再强制 fit 和整屏 refresh。以前每个字都会延迟刷一次 WebGL，下一轮拼音会卡一下。
+- 每个字上屏后不再锁布局等 150ms；DEV 也不会把每一次拼音按键打进 Tauri `plugin-log`（那次 IPC 会把 WebView2 组词拖慢）。需要逐键追踪时再执行 `localStorage.setItem("cc-panes:trace-terminal-input", "1")`。
+- Windows WebView2 拼音：xterm 隐藏输入框不再 `opacity:0` / 移出屏幕 / 零尺寸（TSF 会把这种控件当离屏，搜狗和微软拼音都会顿）。选字后如果没有待处理的 resize，也不再跑 `proposeDimensions`（会强制回流）。
+- 拼音选字后组词预览会留到 PTY 回显画出来，并且这次写入不再等 8ms 合批，字更快进 ConPTY。
+- WebGL 共享字形图集只是新加一页时，不再对所有 pane 整屏 refresh。Claude 真彩色以前会不断加页，每加一页就全刷；只有 `_mergePages`（字形 UV 真的搬家）才丢掉 skip 缓存。
+
 ## 0.12.17 - 2026-09-12
 
 Windows 上 Claude 终于有颜色，顶栏布局簇改成两行，Agent Chat 有了专用工作空间，媒体生成拆除，关掉应用不再被误判成 CLI 被卸载。

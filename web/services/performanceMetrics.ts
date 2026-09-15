@@ -12,6 +12,8 @@ export interface TerminalPerformanceMetric {
   failedWrites: number;
   oldestWaitMs: number;
   callbackMaxMs: number;
+  blocked?: boolean;
+  pendingCallbacks?: number;
   intervalCallbackMaxMs?: number;
   rendererReason?: string;
   requestedRenderer?: string;

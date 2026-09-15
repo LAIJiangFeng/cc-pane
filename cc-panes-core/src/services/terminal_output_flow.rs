@@ -37,9 +37,11 @@
 //! keepalive 只在 `read()` 的 WouldBlock 分支里发（`:156-158`，15s），park 超时即掉线。
 //! SSH 走 `OutputFlowGate::disabled()`，只记账、不 park，超水位靠有界通道整段丢弃。
 
+use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
+use tracing::warn;
 
 /// killswitch：置 false 全局停用生产者暂停（记账与有界通道不受影响）。
 ///
@@ -71,6 +73,40 @@ pub const INTERACTIVE_OUTPUT_WINDOW: Duration = Duration::from_millis(100);
 /// 用字节而非字符：这是启发式阈值，不值得为它每批做一次 O(n) 的 UTF-8 扫描。
 /// 多字节文本会让实际字符阈值偏小——偏保守的方向，正合适。
 pub const INTERACTIVE_OUTPUT_MAX_BYTES: usize = 1024;
+
+/// 单会话投递水位快照（诊断命令 / 卡住时对照前端 ACK）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutputFlowDiagnostics {
+    pub session_id: String,
+    pub sent_seq: u64,
+    pub acked_seq: u64,
+    pub in_flight_bytes: u64,
+    pub ever_acked: bool,
+    pub parked: bool,
+    pub park_enabled: bool,
+    pub pause_count: u64,
+    /// 当前连续 failsafe 超时次数（正常唤醒会清零）。
+    pub failsafe_count: u64,
+    pub ack_silence_ms: Option<u64>,
+    /// 距上次 `read()` 成功返回的毫秒。None = 还没读到过。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_read_ok_ms_ago: Option<u64>,
+    /// 当前这次 `read()` 已阻塞的毫秒。None = 没在 read 里。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reader_blocked_ms: Option<u64>,
+    /// ConPTY 楔死时自动 resize 踢了一脚的次数。
+    #[serde(default)]
+    pub conpty_kick_count: u64,
+    #[serde(default)]
+    pub reader_alive: Option<bool>,
+    #[serde(default)]
+    pub reader_panicked: bool,
+    #[serde(default)]
+    pub reader_phase: Option<String>,
+    #[serde(default)]
+    pub reader_phase_age_ms: Option<u64>,
+}
 
 /// 一次 `park_if_paused` 的结局。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,6 +152,10 @@ pub struct OutputFlowGate {
     consecutive_failsafe_timeouts: AtomicU64,
     /// 最近一次键盘输入时刻，供交互快路判定"这批输出是不是回显"。
     last_input_at: Mutex<Option<Instant>>,
+    /// park / failsafe 日志限频。
+    last_park_warn_at: Mutex<Option<Instant>>,
+    /// 仅诊断日志用；没有也不影响闸门。
+    session_id: Mutex<Option<String>>,
 }
 
 impl Default for OutputFlowGate {
@@ -159,6 +199,15 @@ impl OutputFlowGate {
             pause_count: AtomicU64::new(0),
             consecutive_failsafe_timeouts: AtomicU64::new(0),
             last_input_at: Mutex::new(None),
+            last_park_warn_at: Mutex::new(None),
+            session_id: Mutex::new(None),
+        }
+    }
+
+    /// reader / 诊断日志带上 session id；闸门逻辑不依赖它。
+    pub fn attach_session_id(&self, session_id: &str) {
+        if let Ok(mut slot) = self.session_id.lock() {
+            *slot = Some(session_id.to_string());
         }
     }
 
@@ -235,6 +284,35 @@ impl OutputFlowGate {
         }
     }
 
+    fn warn_flow(&self, kind: &str, rate_limited: bool) {
+        if rate_limited {
+            let Ok(mut last) = self.last_park_warn_at.lock() else {
+                return;
+            };
+            if let Some(at) = *last {
+                if at.elapsed() < Duration::from_secs(5) {
+                    return;
+                }
+            }
+            *last = Some(Instant::now());
+        }
+        let session = self
+            .session_id
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone())
+            .unwrap_or_else(|| "?".to_string());
+        warn!(
+            "[output-flow] session={} {} in_flight_bytes={} ever_acked={} failsafe_count={} pause_count={}",
+            session,
+            kind,
+            self.in_flight(),
+            self.ever_acked(),
+            self.consecutive_failsafe_timeouts.load(Ordering::Relaxed),
+            self.pause_count(),
+        );
+    }
+
     /// reader 线程在每次 `read()` 之前调用：若处于暂停态则阻塞在此。
     ///
     /// 返回时保证以下之一成立：未暂停、水位已跌破 LOW、失效超时到点、或
@@ -253,6 +331,8 @@ impl OutputFlowGate {
         if !*parked || cancelled.load(Ordering::Relaxed) {
             return ParkOutcome::NotParked;
         }
+        // 真正睡进去才算 park 进入；ACK 排空唤醒不打这条。
+        self.warn_flow("park-enter", true);
         let deadline = Instant::now() + self.failsafe;
         let mut timed_out_waiting = false;
         while *parked && !cancelled.load(Ordering::Relaxed) {
@@ -295,6 +375,8 @@ impl OutputFlowGate {
                 .store(0, Ordering::Release);
             ParkOutcome::Stalled
         } else {
+            // 单次 failsafe 过去完全静默；龟速模式要靠这条才能从日志里看出来。
+            self.warn_flow("failsafe-release", false);
             ParkOutcome::TimedOut
         }
     }
@@ -346,6 +428,36 @@ impl OutputFlowGate {
             .lock()
             .ok()
             .and_then(|slot| slot.map(|at| at.elapsed()))
+    }
+
+    pub fn failsafe_count(&self) -> u64 {
+        self.consecutive_failsafe_timeouts.load(Ordering::Relaxed)
+    }
+
+    pub fn park_enabled(&self) -> bool {
+        self.park_enabled
+    }
+
+    pub fn diagnostics(&self, session_id: &str) -> OutputFlowDiagnostics {
+        OutputFlowDiagnostics {
+            session_id: session_id.to_string(),
+            sent_seq: self.sent_seq(),
+            acked_seq: self.acked_seq(),
+            in_flight_bytes: self.in_flight(),
+            ever_acked: self.ever_acked(),
+            parked: self.is_parked(),
+            park_enabled: self.park_enabled(),
+            pause_count: self.pause_count(),
+            failsafe_count: self.failsafe_count(),
+            ack_silence_ms: self.ack_silence().map(|elapsed| elapsed.as_millis() as u64),
+            last_read_ok_ms_ago: None,
+            reader_blocked_ms: None,
+            conpty_kick_count: 0,
+            reader_alive: None,
+            reader_panicked: false,
+            reader_phase: None,
+            reader_phase_age_ms: None,
+        }
     }
 }
 
@@ -797,5 +909,25 @@ mod tests {
         gate.note_acked(10);
         assert!(gate.ever_acked());
         assert!(gate.ack_silence().is_some());
+    }
+
+    #[test]
+    fn diagnostics_snapshot_tracks_park_state() {
+        let gate = armed_gate();
+        gate.attach_session_id("s-diag");
+        let idle = gate.diagnostics("s-diag");
+        assert!(!idle.parked);
+        assert!(idle.ever_acked);
+        assert!(idle.park_enabled);
+        assert_eq!(idle.failsafe_count, 0);
+
+        gate.note_sent(Some(
+            PRODUCER_FLOW_HIGH_WATERMARK_BYTES + 1 + ARMED_BASELINE,
+        ));
+        let flooded = gate.diagnostics("s-diag");
+        assert!(flooded.parked);
+        assert!(flooded.in_flight_bytes > PRODUCER_FLOW_HIGH_WATERMARK_BYTES);
+        assert_eq!(flooded.pause_count, 1);
+        assert_eq!(flooded.session_id, "s-diag");
     }
 }

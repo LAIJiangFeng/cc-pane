@@ -8,6 +8,15 @@
 
 Development branch after v0.12.17.
 
+### Fixed
+
+- Corner layout picker can be dragged taller than its content. The bottom handle used to stop at the list's scroll height, so a full list would not grow.
+- IME composition recovery no longer force-fits and fully refreshes the terminal when cols/rows are unchanged. Selecting a pinyin candidate was hitching the next keystroke with a delayed WebGL refresh.
+- Pinyin input no longer waits 150ms with layout locked after each committed character, and DEV no longer sends every IME keystroke through Tauri `plugin-log` IPC. Opt in to per-key tracing with `localStorage.setItem("cc-panes:trace-terminal-input", "1")`.
+- Windows WebView2 IME: the xterm helper textarea is no longer `opacity:0` / off-screen / zero-sized. TSF was hitching Sogou and Microsoft Pinyin on that control. After a 选字 with no pending resize, recovery also skips `proposeDimensions` (forced reflow).
+- After committing a pinyin candidate, the composition preview stays until the PTY echo paints, and that write skips the 8ms keyboard batch so ConPTY sees the glyph on the same turn.
+- WebGL no longer full-refreshes every pane when the shared glyph atlas merely grows a new same-size page. Claude truecolor used to fill pages constantly; only `_mergePages` (glyph UVs actually move) still busts the skip cache.
+
 ## 0.12.17 - 2026-09-12
 
 Claude color on Windows ConPTY, a two-row layout cluster, a dedicated Agent Chat workspace, media generation removed, and CLI detection that no longer looks like an uninstall.

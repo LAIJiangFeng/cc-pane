@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path as FsPath, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -39,30 +39,7 @@ const MANIFEST_FILE: &str = "daemon-manifest.json";
 const DAEMON_CREATE_DEADLINE: Duration = Duration::from_secs(45);
 
 fn summarize_terminal_input(data: &str) -> serde_json::Value {
-    let chars: Vec<String> = data
-        .chars()
-        .take(24)
-        .map(|ch| ch.escape_default().to_string())
-        .collect();
-    let code_points: Vec<String> = data
-        .chars()
-        .take(24)
-        .map(|ch| format!("{:x}", ch as u32))
-        .collect();
-    let bytes: Vec<String> = data
-        .as_bytes()
-        .iter()
-        .take(32)
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
-    serde_json::json!({
-        "chars": chars,
-        "charCount": data.chars().count(),
-        "utf8Bytes": data.len(),
-        "codePoints": code_points,
-        "bytes": bytes,
-        "truncated": data.chars().count() > 24 || data.len() > 32,
-    })
+    serde_json::json!({ "charCount": data.chars().count(), "utf8Bytes": data.len() })
 }
 
 #[derive(Clone)]
@@ -80,6 +57,8 @@ impl DaemonConfig {
         default_cwd: String,
     ) -> Self {
         let started_at = current_epoch_millis();
+        // Capture before the executable can be replaced, not on a later status call.
+        let _ = cc_panes_core::utils::binary_identity::current_binary_sha256();
         let (shutdown_tx, _shutdown_rx) = watch::channel(false);
         Self {
             inner: Arc::new(DaemonState {
@@ -97,8 +76,20 @@ impl DaemonConfig {
                 session_provenance: parking_lot::RwLock::new(HashMap::new()),
                 restore_replacements: parking_lot::RwLock::new(HashMap::new()),
                 session_visibility: RwLock::new(()),
+                restore_creation_locks: parking_lot::Mutex::new(HashMap::new()),
             }),
         }
+    }
+
+    fn restore_creation_lock(&self, session_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut locks = self.inner.restore_creation_locks.lock();
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        if let Some(lock) = locks.get(session_id).and_then(std::sync::Weak::upgrade) {
+            return lock;
+        }
+        let lock = Arc::new(tokio::sync::Mutex::new(()));
+        locks.insert(session_id.to_owned(), Arc::downgrade(&lock));
+        lock
     }
 
     pub fn token(&self) -> &str {
@@ -119,6 +110,8 @@ impl DaemonConfig {
         DaemonStatus {
             status: "ok".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
+            binary_sha256: cc_panes_core::utils::binary_identity::current_binary_sha256()
+                .map(str::to_owned),
             pid: std::process::id(),
             addr: self.inner.addr.to_string(),
             started_at: self.inner.started_at,
@@ -324,6 +317,8 @@ struct DaemonState {
     /// Creation visibility fence. Every externally observable session operation takes a read
     /// guard; create holds the write guard until provenance and the initial claim are registered.
     session_visibility: RwLock<()>,
+    restore_creation_locks:
+        parking_lot::Mutex<HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>,
 }
 
 /// 一条会话写权限租约。
@@ -365,6 +360,8 @@ impl Drop for DesktopClientGuard {
 pub struct DaemonStatus {
     pub status: String,
     pub version: String,
+    #[serde(default)]
+    pub binary_sha256: Option<String>,
     pub pid: u32,
     pub addr: String,
     pub started_at: u64,
@@ -560,6 +557,10 @@ pub fn router(config: DaemonConfig) -> Router {
         .route("/api/launches/{launch_id}", delete(cancel_launch))
         .route("/api/sessions", get(list_sessions))
         .route("/api/sessions/{id}/status", get(get_session_status))
+        .route(
+            "/api/sessions/{id}/output-flow",
+            get(get_terminal_flow_diagnostics),
+        )
         .route(
             "/api/sessions-by-launch/{launch_id}",
             get(find_session_by_launch),
@@ -783,6 +784,14 @@ fn reuse_expected_session(
     Ok(Some(session_id))
 }
 
+async fn terminal_io<T: Send + 'static>(
+    operation: impl FnOnce() -> cc_panes_core::utils::AppResult<T> + Send + 'static,
+) -> cc_panes_core::utils::AppResult<T> {
+    tokio::task::spawn_blocking(operation)
+        .await
+        .map_err(|error| AppError::from(error.to_string()))?
+}
+
 async fn create_session(
     State(config): State<DaemonConfig>,
     headers: HeaderMap,
@@ -861,19 +870,28 @@ async fn create_session(
         ssh: req.core.ssh,
         wsl: req.core.wsl,
     });
-    // All readers wait until PTY creation, immutable provenance, and the initial claim form one
-    // externally visible unit. The backend may emit a session-created event before returning, but
-    // any operation triggered by that event blocks on the matching read guard.
-    let _visibility = config.inner.session_visibility.write().await;
-    if let Some(session_id) = reuse_expected_session(&config, &core_request, owner.as_deref())? {
-        return Ok((
-            StatusCode::CREATED,
-            Json(CreateSessionResponse {
-                session_id,
-                reused_existing: true,
-                resolved_model_id: None,
-            }),
-        ));
+    // Only requests restoring the same old session serialize across slow preparation.
+    let restore_lock = core_request
+        .expected_saved_session_id
+        .as_deref()
+        .map(|id| config.restore_creation_lock(id));
+    let _restore_guard = match restore_lock {
+        Some(lock) => Some(lock.lock_owned().await),
+        None => None,
+    };
+    {
+        let _visibility = config.inner.session_visibility.write().await;
+        if let Some(session_id) = reuse_expected_session(&config, &core_request, owner.as_deref())?
+        {
+            return Ok((
+                StatusCode::CREATED,
+                Json(CreateSessionResponse {
+                    session_id,
+                    reused_existing: true,
+                    resolved_model_id: None,
+                }),
+            ));
+        }
     }
     let expected_saved_session_id = core_request.expected_saved_session_id.clone();
     // create_session 里 WSL 冷启动 + 探活 + spawn_pty 是同步阻塞操作，
@@ -881,8 +899,59 @@ async fn create_session(
     let launch_id = core_request.launch_id.clone();
     let runtime_kind = provenance_runtime_kind.clone();
     let backend = config.terminal_backend_arc();
-    let mut create_task =
-        tokio::task::spawn_blocking(move || backend.create_session_with_outcome(core_request));
+    let publication_config = config.clone();
+    let publication_cancelled = Arc::new(AtomicBool::new(false));
+    let cancelled_for_publication = publication_cancelled.clone();
+    let provenance = TerminalSessionProvenance {
+        session_id: String::new(),
+        daemon_generation: config.inner.started_at,
+        birth_nonce: generate_token(),
+        origin_instance_id: owner.clone(),
+        origin_layout_id: provenance_origin_layout_id,
+        origin_tab_id: provenance_origin_tab_id,
+        origin_terminal_pane_id: provenance_origin_terminal_pane_id,
+        project_path: provenance_project_path,
+        runtime_kind: provenance_runtime_kind,
+        cli_tool: provenance_cli_tool,
+        resume_id: provenance_resume_id,
+        created_at_ms: current_epoch_millis(),
+    };
+    let publisher = move |session_id: &str,
+                          register: &mut dyn FnMut() -> anyhow::Result<()>|
+          -> anyhow::Result<()> {
+        let _visibility = publication_config.inner.session_visibility.blocking_write();
+        if cancelled_for_publication.load(Ordering::Acquire) {
+            anyhow::bail!("Terminal launch cancelled before publication");
+        }
+        if !publication_config.may_write_session(session_id, owner.as_deref()) {
+            anyhow::bail!("Session is already claimed");
+        }
+        register()?;
+        if let Some(owner) = owner.as_deref() {
+            publication_config
+                .try_claim_session(session_id, owner, None)
+                .map_err(|existing| anyhow::anyhow!("Session is already claimed by {existing}"))?;
+        }
+        let mut evidence = provenance.clone();
+        evidence.session_id = session_id.to_owned();
+        publication_config
+            .inner
+            .session_provenance
+            .write()
+            .insert(session_id.to_owned(), evidence);
+        if let Some(expected) = expected_saved_session_id.as_ref() {
+            publication_config
+                .inner
+                .restore_replacements
+                .write()
+                .insert(expected.clone(), session_id.to_owned());
+        }
+        publication_config.touch_session(session_id);
+        Ok(())
+    };
+    let mut create_task = tokio::task::spawn_blocking(move || {
+        backend.create_session_published(core_request, &publisher)
+    });
     let outcome = match tokio::time::timeout(DAEMON_CREATE_DEADLINE, &mut create_task).await {
         Ok(result) => result
             .map_err(|error| {
@@ -894,6 +963,7 @@ async fn create_session(
             })?
             .map_err(app_error)?,
         Err(_) => {
+            publication_cancelled.store(true, Ordering::Release);
             let late_backend = config.terminal_backend_arc();
             tokio::spawn(async move {
                 if let Ok(Ok(outcome)) = create_task.await {
@@ -931,47 +1001,6 @@ async fn create_session(
     };
     let session_id = outcome.session_id;
     let resolved_model_id = outcome.resolved_model_id;
-    config.touch_session(&session_id);
-    // create+claim 原子化（docs/61 评审 #2）：会话对外可见前就把写权限归给创建者，
-    // 否则"先创建后 claim"之间存在窗口，另一实例可以抢走刚建好的会话。
-    // 这里在 session_id 返回给调用方之前完成，故不存在可被观察到的未认领态。
-    if let Some(owner) = owner.as_deref() {
-        if let Err(existing) = config.try_claim_session(&session_id, owner, None) {
-            let _ = config
-                .terminal_backend()
-                .kill_with_reason(&session_id, KillReason::Unknown);
-            config.remove_session_activity(&session_id);
-            return Err(json_error(
-                StatusCode::CONFLICT,
-                "SESSION_CLAIMED",
-                format!("fresh session id is already claimed by {existing}"),
-            ));
-        }
-    }
-    config.inner.session_provenance.write().insert(
-        session_id.clone(),
-        TerminalSessionProvenance {
-            session_id: session_id.clone(),
-            daemon_generation: config.inner.started_at,
-            birth_nonce: generate_token(),
-            origin_instance_id: owner,
-            origin_layout_id: provenance_origin_layout_id,
-            origin_tab_id: provenance_origin_tab_id,
-            origin_terminal_pane_id: provenance_origin_terminal_pane_id,
-            project_path: provenance_project_path,
-            runtime_kind: provenance_runtime_kind,
-            cli_tool: provenance_cli_tool,
-            resume_id: provenance_resume_id,
-            created_at_ms: current_epoch_millis(),
-        },
-    );
-    if let Some(expected_session_id) = expected_saved_session_id {
-        config
-            .inner
-            .restore_replacements
-            .write()
-            .insert(expected_session_id, session_id.clone());
-    }
     Ok((
         StatusCode::CREATED,
         Json(CreateSessionResponse {
@@ -1013,6 +1042,21 @@ async fn list_sessions(
         .get_all_status()
         .map_err(internal_error)?;
     Ok(Json(statuses))
+}
+
+async fn get_terminal_flow_diagnostics(
+    State(config): State<DaemonConfig>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<
+    Json<Option<cc_panes_core::services::terminal_output_flow::OutputFlowDiagnostics>>,
+    (StatusCode, Json<serde_json::Value>),
+> {
+    authorize(&headers, config.token())?;
+    let _visibility = config.inner.session_visibility.read().await;
+    Ok(Json(
+        config.terminal_backend().get_terminal_flow_diagnostics(&id),
+    ))
 }
 
 async fn get_session_status(
@@ -1071,9 +1115,9 @@ async fn resize_session(
     let _visibility = config.inner.session_visibility.read().await;
     ensure_may_write(&config, &id, &headers)?;
     config.touch_session(&id);
-    config
-        .terminal_backend()
-        .resize(&id, req.cols, req.rows)
+    drop(_visibility);
+    terminal_io(move || config.terminal_backend().resize(&id, req.cols, req.rows))
+        .await
         .map_err(not_found_from_error)?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1269,13 +1313,17 @@ async fn write_session(
         "terminal-input.trace daemon.write_session"
     );
     config.touch_session(&id);
-    let backend = config.terminal_backend();
-    let write = if req.source.as_deref() == Some("system") {
-        backend.write_reply(&id, &req.data)
-    } else {
-        backend.write(&id, &req.data)
-    };
-    write.map_err(not_found_from_error)?;
+    drop(_visibility);
+    terminal_io(move || {
+        let backend = config.terminal_backend();
+        if req.source.as_deref() == Some("system") {
+            backend.write_reply(&id, &req.data)
+        } else {
+            backend.write(&id, &req.data)
+        }
+    })
+    .await
+    .map_err(not_found_from_error)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1289,10 +1337,14 @@ async fn submit_session(
     let _visibility = config.inner.session_visibility.read().await;
     ensure_may_write(&config, &id, &headers)?;
     config.touch_session(&id);
-    config
-        .terminal_backend()
-        .submit_text_to_session(&id, &req.text)
-        .map_err(not_found_from_error)?;
+    drop(_visibility);
+    terminal_io(move || {
+        config
+            .terminal_backend()
+            .submit_text_to_session(&id, &req.text)
+    })
+    .await
+    .map_err(not_found_from_error)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1304,10 +1356,13 @@ async fn get_session_output(
 ) -> Result<Json<SessionOutput>, (StatusCode, Json<serde_json::Value>)> {
     authorize(&headers, config.token())?;
     config.touch_session(&id);
-    let output = config
-        .terminal_backend()
-        .get_session_output(&id, query.lines.unwrap_or(0))
-        .map_err(not_found_from_error)?;
+    let output = terminal_io(move || {
+        config
+            .terminal_backend()
+            .get_session_output(&id, query.lines.unwrap_or(0))
+    })
+    .await
+    .map_err(not_found_from_error)?;
     Ok(Json(output))
 }
 
@@ -1318,9 +1373,8 @@ async fn get_session_snapshot(
 ) -> Result<Json<TerminalReplaySnapshot>, (StatusCode, Json<serde_json::Value>)> {
     authorize(&headers, config.token())?;
     config.touch_session(&id);
-    let snapshot = config
-        .terminal_backend()
-        .get_session_replay_snapshot(&id)
+    let snapshot = terminal_io(move || config.terminal_backend().get_session_replay_snapshot(&id))
+        .await
         .map_err(internal_error)?
         .ok_or_else(|| not_found("Session not found"))?;
     Ok(Json(snapshot))
@@ -1338,11 +1392,11 @@ async fn get_session_recovery_snapshot(
 > {
     authorize(&headers, config.token())?;
     config.touch_session(&id);
-    let snapshot = config
-        .terminal_backend()
-        .get_session_recovery_snapshot(&id)
-        .map_err(internal_error)?
-        .ok_or_else(|| not_found("Session not found"))?;
+    let snapshot =
+        terminal_io(move || config.terminal_backend().get_session_recovery_snapshot(&id))
+            .await
+            .map_err(internal_error)?
+            .ok_or_else(|| not_found("Session not found"))?;
     Ok(Json(snapshot))
 }
 
@@ -1405,9 +1459,11 @@ async fn kill_session(
     // 正在使用的会话——比输入交错更严重，且不可逆。
     ensure_may_write(&config, &id, &headers)?;
     let reason = KillReason::parse(query.reason.as_deref());
-    config
-        .terminal_backend()
-        .kill_with_reason(&id, reason)
+    drop(_visibility);
+    let backend = config.terminal_backend_arc();
+    let kill_id = id.clone();
+    terminal_io(move || backend.kill_with_reason(&kill_id, reason))
+        .await
         .map_err(not_found_from_error)?;
     config.remove_session_activity(&id);
     Ok(StatusCode::NO_CONTENT)
@@ -1622,60 +1678,56 @@ async fn handle_ws(
     caller: Option<String>,
 ) {
     config.touch_session(&session_id);
-    let (mut ws_tx, mut ws_rx) = socket.split();
-    // caller = per-session WS 的 instanceId（WsQuery 既有字段）——与 control
-    // 连接同源，hidden 闸门据此定位到本连接。
-    let mut output_rx = config
+    let (mut tx, mut rx) = socket.split();
+    let mut output = config
         .ws_emitter()
         .subscribe_with_connection(&session_id, caller.clone());
-    let send_session_id = session_id.clone();
-
-    let send_task = tokio::spawn(async move {
-        while let Some(msg) = output_rx.recv().await {
-            if ws_tx.send(Message::Text(msg.into())).await.is_err() {
+    let send = async {
+        while let Some(message) = output.recv().await {
+            if tx.send(Message::Text(message.into())).await.is_err() {
                 break;
             }
         }
-    });
-
-    while let Some(Ok(msg)) = ws_rx.next().await {
-        match msg {
-            Message::Text(text) => {
-                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
-                    if value.get("type").and_then(|value| value.as_str()) == Some("input") {
-                        let data = value
-                            .get("data")
-                            .and_then(|value| value.as_str())
-                            .unwrap_or("");
-                        config.touch_session(&session_id);
-                        // 租约闸门：会话被别的实例持有时，这条连接只能看不能写，
-                        // 否则两个实例的输入会交错进同一个 PTY。
-                        if config.may_write_session(&session_id, caller.as_deref()) {
-                            let _ = config.terminal_backend().write(&session_id, data);
-                        } else {
-                            tracing::warn!(
-                                session_id = %session_id,
-                                caller = caller.as_deref().unwrap_or("<anonymous>"),
-                                "rejected ws input: session claimed by another instance"
-                            );
-                        }
-                    }
-                }
+        let _ = tx.close().await;
+    };
+    let receive = async {
+        while let Some(Ok(message)) = rx.next().await {
+            let data = match message {
+                Message::Text(text) => serde_json::from_str::<serde_json::Value>(&text)
+                    .ok()
+                    .and_then(|value| {
+                        (value.get("type").and_then(|v| v.as_str()) == Some("input"))
+                            .then(|| {
+                                value
+                                    .get("data")
+                                    .and_then(|v| v.as_str())
+                                    .map(str::to_owned)
+                            })
+                            .flatten()
+                    }),
+                Message::Binary(bytes) => String::from_utf8(bytes.to_vec()).ok(),
+                Message::Close(_) => break,
+                _ => None,
+            };
+            let Some(data) = data else {
+                continue;
+            };
+            if !config.may_write_session(&session_id, caller.as_deref()) {
+                tracing::warn!(session_id, "rejected input from a non-owner connection");
+                continue;
             }
-            Message::Binary(data) => {
-                if let Ok(text) = String::from_utf8(data.to_vec()) {
-                    if config.may_write_session(&session_id, caller.as_deref()) {
-                        let _ = config.terminal_backend().write(&session_id, &text);
-                    }
-                }
+            config.touch_session(&session_id);
+            let backend = config.terminal_backend_arc();
+            let id = session_id.clone();
+            if let Err(error) = terminal_io(move || backend.write(&id, &data)).await {
+                tracing::warn!(session_id, %error, "terminal socket input failed");
+                break;
             }
-            Message::Close(_) => break,
-            _ => {}
         }
-    }
-
-    send_task.abort();
-    config.ws_emitter().cleanup_session(&send_session_id);
+    };
+    tokio::select! { _ = send => {}, _ = receive => {} }
+    drop(output);
+    config.ws_emitter().cleanup_session(&session_id);
 }
 
 pub(crate) fn authorize(
@@ -1864,6 +1916,8 @@ mod tests {
     #[derive(Default)]
     struct MockTerminalBackend {
         created: Mutex<Vec<CoreCreateSessionRequest>>,
+        preparation_gate:
+            Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
         resolved_model_id: Mutex<Option<String>>,
         writes: Mutex<Vec<(String, String)>>,
         submits: Mutex<Vec<(String, String)>>,
@@ -1891,6 +1945,27 @@ mod tests {
                 reused_existing: false,
                 resolved_model_id: self.resolved_model_id.lock().unwrap().clone(),
             })
+        }
+
+        fn create_session_published(
+            &self,
+            request: CoreCreateSessionRequest,
+            publisher: &cc_panes_core::services::SessionPublisher,
+        ) -> AppResult<cc_panes_core::services::CreateSessionOutcome> {
+            if let Some((started, release)) = self.preparation_gate.lock().unwrap().take() {
+                started.send(()).unwrap();
+                release.recv().unwrap();
+            }
+            let mut outcome = None;
+            publisher("session-1", &mut || {
+                outcome = Some(
+                    self.create_session_with_outcome(request.clone())
+                        .map_err(anyhow::Error::new)?,
+                );
+                Ok(())
+            })
+            .map_err(AppError::from)?;
+            Ok(outcome.expect("published mock session"))
         }
 
         fn write(&self, session_id: &str, data: &str) -> AppResult<()> {
@@ -1953,6 +2028,16 @@ mod tests {
                 .get_all_status()?
                 .into_iter()
                 .find(|status| status.session_id == session_id))
+        }
+
+        fn get_terminal_flow_diagnostics(
+            &self,
+            session_id: &str,
+        ) -> Option<cc_panes_core::services::terminal_output_flow::OutputFlowDiagnostics> {
+            (session_id == "session-1").then(|| {
+                cc_panes_core::services::terminal_output_flow::OutputFlowGate::new()
+                    .diagnostics(session_id)
+            })
         }
 
         fn get_session_output(&self, session_id: &str, _lines: usize) -> AppResult<SessionOutput> {
@@ -2046,6 +2131,48 @@ mod tests {
             Arc::new(WsEmitter::new()),
             "/default/project".to_string(),
         )
+    }
+
+    #[tokio::test]
+    async fn slow_creation_does_not_block_existing_session_operations() {
+        let backend = Arc::new(MockTerminalBackend::default());
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        *backend.preparation_gate.lock().unwrap() = Some((started_tx, release_rx));
+        let config = test_config("test-token", "127.0.0.1:12345", backend.clone());
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/sessions")
+            .header(header::AUTHORIZATION, "Bearer test-token")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::json!({"projectPath":"/test", "cols":80, "rows":24}).to_string(),
+            ))
+            .unwrap();
+        let create = tokio::spawn(router(config.clone()).oneshot(request));
+        tokio::task::spawn_blocking(move || started_rx.recv_timeout(Duration::from_secs(5)))
+            .await
+            .unwrap()
+            .unwrap();
+        let request = Request::builder()
+            .uri("/api/sessions")
+            .header(header::AUTHORIZATION, "Bearer test-token")
+            .body(Body::empty())
+            .unwrap();
+        let concurrent =
+            tokio::time::timeout(Duration::from_secs(1), router(config).oneshot(request)).await;
+        // Always release the blocking mock before checking assertions.
+        release_tx.send(()).unwrap();
+        let created = create.await.unwrap().unwrap();
+        assert_eq!(
+            concurrent
+                .expect("other sessions must stay responsive")
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        assert_eq!(created.status(), StatusCode::CREATED);
+        assert_eq!(backend.created.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]
@@ -2753,6 +2880,48 @@ mod tests {
         assert_eq!(health.service, "cc-panes-daemon");
         assert_eq!(health.pid, std::process::id());
         assert_eq!(health.started_at, expected_started_at);
+    }
+
+    #[tokio::test]
+    async fn flow_diagnostics_require_auth_and_return_the_daemon_snapshot() {
+        let app = router(test_config(
+            "secret",
+            "127.0.0.1:18082",
+            Arc::new(MockTerminalBackend::default()),
+        ));
+        let unauthorized = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/sessions/session-1/output-flow")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+        for (id, exists) in [("session-1", true), ("unknown", false)] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/api/sessions/{id}/output-flow"))
+                        .header(header::AUTHORIZATION, "Bearer secret")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            let value: Option<
+                cc_panes_core::services::terminal_output_flow::OutputFlowDiagnostics,
+            > = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(value.is_some(), exists);
+            if let Some(value) = value {
+                assert_eq!(value.session_id, id);
+            }
+        }
     }
 
     #[tokio::test]

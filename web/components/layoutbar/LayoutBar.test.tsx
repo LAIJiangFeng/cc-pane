@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import LayoutBar from "./LayoutBar";
 import { useActivityBarStore, useCanvasDisplayStore, usePanesStore } from "@/stores";
+import { usePanelPreferencesStore } from "@/stores/usePanelPreferencesStore";
 import { createPanel } from "@/lib/paneTree";
 import { AGENT_CHAT_LAYOUT_ID } from "@/types";
 
@@ -324,5 +325,20 @@ describe("LayoutBar", () => {
     await user.click(deleteButtons[0]);
 
     expect(await screen.findByRole("dialog", { name: /删除.*布局|Delete/i })).toBeInTheDocument();
+  });
+
+  it("下缘把手可以往下拉长列表，不卡在内容高度", async () => {
+    const user = userEvent.setup();
+    usePanelPreferencesStore.setState({ layoutHeight: null });
+    render(<LayoutBar />);
+
+    await user.hover(screen.getByRole("button", { name: /布局|Layout/i }));
+    const handle = await screen.findByRole("separator", { name: /调整布局列表高度|Resize layout list height/i });
+    fireEvent.pointerDown(handle, { button: 0, clientY: 200 });
+    fireEvent.pointerMove(document, { clientY: 360 });
+    fireEvent.pointerUp(document);
+
+    // jsdom 里 offsetHeight/scrollHeight 为 0；旧逻辑会把 next 卡在 content=0 再写成 null。
+    expect(usePanelPreferencesStore.getState().layoutHeight).toBeGreaterThanOrEqual(160);
   });
 });

@@ -1,5 +1,5 @@
 use crate::models::provider::{Provider, SystemProviderInfo};
-use crate::services::ProviderService;
+use crate::services::{CcSwitchImportReport, ProviderService};
 use crate::utils::AppResult;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -68,6 +68,14 @@ pub fn detect_system_provider(
     service: State<'_, Arc<ProviderService>>,
 ) -> AppResult<SystemProviderInfo> {
     Ok(service.system_provider_info())
+}
+
+/// 从本机 `~/.cc-switch/cc-switch.db` 抄入供应商（去重，不改默认）。
+#[tauri::command]
+pub fn import_cc_switch_providers(
+    service: State<'_, Arc<ProviderService>>,
+) -> AppResult<CcSwitchImportReport> {
+    Ok(service.import_cc_switch_providers(None)?)
 }
 
 /// 配置目录信息
