@@ -32,6 +32,9 @@ jobs:
       - name: TypeScript type check
         run: npx tsc --noEmit
 
+      - name: Release metadata gates
+        run: node --test .github/scripts/release-assets.test.mjs
+
       - name: Build frontend
         run: npm run build
 

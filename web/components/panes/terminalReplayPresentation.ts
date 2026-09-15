@@ -1,7 +1,8 @@
 import type { Terminal } from "@xterm/xterm";
+import { deferTerminalReplayGeometryLayout, holdTerminalReplayGeometry, type ReplayGeometryTerminal } from "./terminalReplayGeometry";
 
 /** Structural subset keeps replay usable before open() and in non-DOM consumers. */
-export interface ReplayPresentationTerminal {
+export interface ReplayPresentationTerminal extends ReplayGeometryTerminal {
   element?: HTMLElement | null;
   rows?: number;
   buffer: {
@@ -22,6 +23,10 @@ export interface ReplayPresentationTerminal {
 interface FrozenPresentation {
   depth: number;
   version: number;
+  startedAt: number;
+  watchdog: ReturnType<typeof setTimeout> | null;
+  cancelled: Promise<never>;
+  cancel: (error: Error) => void;
   hide: () => void;
   layouts: Map<object, () => void>;
   finish: () => Promise<void>;
@@ -39,11 +44,77 @@ interface CapturedFrame {
 
 const presentations = new WeakMap<object, FrozenPresentation>();
 const preparations = new WeakMap<object, Promise<FrozenPresentation | null>>();
+const livePresentations = new Set<FrozenPresentation>();
+const failureHandlers = new WeakMap<object, (error: Error) => void>();
+
+export function registerTerminalReplayFailureHandler(term: object, handler: (error: Error) => void): () => void {
+  failureHandlers.set(term, handler);
+  return () => {
+    failureHandlers.delete(term);
+    presentations.get(term)?.cancel(new DOMException("Terminal view disposed", "AbortError"));
+  };
+}
+
+/** replay() 不归时强制揭开静态帧。version 每推进一次重置。 */
+export const PRESENTATION_WATCHDOG_MS = 10_000;
+let presentationWatchdogMs = PRESENTATION_WATCHDOG_MS;
+const CAPTURE_OUTER_TIMEOUT_MS = 1_000;
+
+export function _setPresentationWatchdogMsForTest(ms: number): void {
+  presentationWatchdogMs = ms;
+}
+
+function raceTimeout<T>(promise: Promise<T>, ms: number, fallback: () => T): Promise<T> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve(fallback());
+    }, ms);
+    void promise.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      },
+      () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(fallback());
+      },
+    );
+  });
+}
+
+function armPresentationWatchdog(term: object, presentation: FrozenPresentation): void {
+  if (presentation.watchdog != null) clearTimeout(presentation.watchdog);
+  presentation.watchdog = setTimeout(() => {
+    presentation.watchdog = null;
+    if (presentations.get(term) !== presentation) return;
+    if (presentation.depth === 0) return;
+    const error = new Error("Terminal replay made no progress before its deadline");
+    presentation.cancel(error);
+    failureHandlers.get(term)?.(error);
+  }, presentationWatchdogMs);
+}
+
+/** 诊断：当前盖着静态帧的 replay。WeakMap 不可遍历，另挂一份 live set。 */
+export function getActivePresentationDebug(): Array<{ depth: number; version: number; ageMs: number }> {
+  const now = Date.now();
+  return [...livePresentations].map((presentation) => ({
+    depth: presentation.depth,
+    version: presentation.version,
+    ageMs: Math.max(0, now - presentation.startedAt),
+  }));
+}
 
 /** A changing terminal grid must not race replay's cursor-positioning instructions. */
 export function deferTerminalLayoutDuringReplay(term: object, owner: object, apply: () => void): boolean {
   const presentation = presentations.get(term);
-  if (!presentation || presentation.depth === 0) return false;
+  if (!presentation || presentation.depth === 0) return deferTerminalReplayGeometryLayout(term, owner, apply);
   presentation.layouts.set(owner, apply);
   return true;
 }
@@ -165,7 +236,7 @@ async function finishPresentation(
 ): Promise<void> {
   const { element, parent, copy, opacity, position, ariaBusy, restoreViewport } = frame;
   const version = presentation.version;
-  const canRelease = () => presentation.depth === 0 && presentation.version === version;
+  const canRelease = () => presentations.get(term) === presentation && presentation.depth === 0 && presentation.version === version;
   try {
     if (!element.isConnected) return;
     const layouts = [...presentation.layouts.values()];
@@ -183,6 +254,11 @@ async function finishPresentation(
   } finally {
     if (canRelease()) {
       presentations.delete(term);
+      livePresentations.delete(presentation);
+      if (presentation.watchdog != null) {
+        clearTimeout(presentation.watchdog);
+        presentation.watchdog = null;
+      }
       element.style.opacity = opacity;
       copy.remove();
       parent.style.position = position;
@@ -208,8 +284,13 @@ function freezePresentation(term: ReplayPresentationTerminal, textFallback = fal
   parent.appendChild(copy);
   parent.setAttribute("aria-busy", "true");
   element.style.opacity = "0";
-  const presentation: FrozenPresentation = { depth: 0, version: 0, layouts: new Map(),
-    hide: () => { element.style.opacity = "0"; }, finish: () => finishPresentation(term, presentation, frame) };
+  let cancel!: (error: Error) => void;
+  const cancelled = new Promise<never>((_resolve, reject) => { cancel = reject; });
+  const presentation: FrozenPresentation = {
+    depth: 0, version: 0, startedAt: Date.now(), watchdog: null, cancelled, cancel, layouts: new Map(),
+    hide: () => { element.style.opacity = "0"; }, finish: () => finishPresentation(term, presentation, frame),
+  };
+  livePresentations.add(presentation);
   return presentation;
 }
 
@@ -218,28 +299,42 @@ export async function withTerminalReplayPresentation<T>(
   term: ReplayPresentationTerminal,
   replay: () => Promise<T>,
 ): Promise<T> {
+  // Lock before frame capture's first await: a new xterm may not have painted yet.
+  const releaseGeometry = holdTerminalReplayGeometry(term);
   let presentation = presentations.get(term);
-  if (!presentation) {
-    let captured: FrozenPresentation | null;
-    if (term.onRender && term.element?.querySelector("canvas")) {
-      const pending = preparations.get(term) ?? captureWebglFrame(term);
-      preparations.set(term, pending);
-      captured = await pending;
-      preparations.delete(term);
-    } else captured = freezePresentation(term);
-    presentation = presentations.get(term) ?? captured ?? undefined;
-    if (presentation) presentations.set(term, presentation);
-  }
-  if (presentation) {
-    presentation.depth += 1;
-    presentation.version += 1;
-    presentation.hide();
-  }
+  let enteredPresentation = false;
   try {
-    return await replay();
+    if (!presentation) {
+      let captured: FrozenPresentation | null;
+      if (term.onRender && term.element?.querySelector("canvas")) {
+        const pending = preparations.get(term) ?? captureWebglFrame(term);
+        preparations.set(term, pending);
+        captured = await raceTimeout(pending, CAPTURE_OUTER_TIMEOUT_MS, () => freezePresentation(term, true));
+        if (preparations.get(term) === pending) preparations.delete(term);
+      } else captured = freezePresentation(term);
+      presentation = presentations.get(term) ?? captured ?? undefined;
+      if (presentation) presentations.set(term, presentation);
+    }
+    if (presentation) {
+      presentation.depth += 1;
+      enteredPresentation = true;
+      presentation.version += 1;
+      presentation.hide();
+      armPresentationWatchdog(term, presentation);
+    }
+    return await (presentation ? Promise.race([replay(), presentation.cancelled]) : replay());
   } finally {
-    if (presentation && --presentation.depth === 0) {
-      await presentation.finish();
+    // Fit while the frozen frame still covers the local grid's final resize.
+    releaseGeometry();
+    if (enteredPresentation && presentation && presentations.get(term) === presentation) {
+      if (presentation.depth > 0) presentation.depth -= 1;
+      if (presentation.depth === 0) {
+        if (presentation.watchdog != null) {
+          clearTimeout(presentation.watchdog);
+          presentation.watchdog = null;
+        }
+        await presentation.finish();
+      }
     }
   }
 }

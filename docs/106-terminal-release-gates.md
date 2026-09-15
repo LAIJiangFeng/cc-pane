@@ -25,6 +25,12 @@
 基线 90%」）判回归。比较 `summarize-performance.mjs` 的报告形状（前端堆峰值、
 积压字符、上报延迟、定时器延迟、采样耗时、进程私有内存峰值）。
 
+前端与后端各自每 15 秒采样，启动相位不同会使 `frontendAgeMs` 在同样健康的两个
+构建中分别接近 0 秒和 15 秒。新版汇总保留原始年龄，并用同一 boot/PID 下连续
+样本推导 `maxFrontendUpdateIntervalMs`；它同时取原始年龄作下限，仍能发现上报
+停止。两侧均有连续样本时按更新间隔比较；旧报告或数据不足时保留原始年龄门禁。
+这是采样相位修正，不提高 10% 容差，也不移除停报检测。
+
 **产报告**（两个构建各跑一次同负载 soak，得到各自的 `performance.jsonl` 目录）：
 
 ```bash
@@ -67,10 +73,9 @@ npm run smoke:static-replay -- <playwright-module-path> [browser-channel]
 - [ ] 静态回放四组全部像素对账通过、无 pageerror。
 - [ ] 归档 before/during/after 截图（脚本已写入临时 artifacts 目录），PR 里新旧并排。
 
-**缺口（诚实标注，未在本文补齐）**：固定样张集目前只覆盖恢复路径 + CJK 文本，
-**尚未**纳入 boxdraw 全家桶、块/浓度/象限字符、Powerline 分隔符、CJK 对齐标尺、
-256 色/真彩渐变。要扩 F6.2，应在 `terminal-static-replay.html`（或新增 fixture）里
-注入这些样张并各自截图归档，再由本清单勾选。当前发版至少保证：
+固定样张集已扩展 boxdraw、块/浓度/象限字符、Powerline 分隔符、CJK 对齐标尺、
+256 色和真彩渐变，均随 `terminal-static-replay.html` 的四组恢复测试归档。
+它验证已选样张的恢复一致性，不代表所有字体组合的完整字形覆盖。当前发版还须保证：
 - [ ] WebGL 透明/花屏回归项过 `smoke-transparent-webgl.mjs`（见 `CLAUDE.md` 已记录的坑）。
 - [ ] 主题对比度过 `npm run check:theme-contrast`；bundle 预算过 `npm run check:bundle`。
 

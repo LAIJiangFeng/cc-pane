@@ -15,14 +15,15 @@ use anyhow::{anyhow, Result};
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectCpuRateControlInformation,
-    JobObjectExtendedLimitInformation, SetInformationJobObject,
+    JobObjectExtendedLimitInformation, SetInformationJobObject, TerminateJobObject,
     JOBOBJECT_CPU_RATE_CONTROL_INFORMATION, JOBOBJECT_CPU_RATE_CONTROL_INFORMATION_0,
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_CPU_RATE_CONTROL_ENABLE,
     JOB_OBJECT_CPU_RATE_CONTROL_WEIGHT_BASED, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     JOB_OBJECT_LIMIT_PRIORITY_CLASS,
 };
 use windows::Win32::System::Threading::{
-    OpenProcess, BELOW_NORMAL_PRIORITY_CLASS, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+    GetExitCodeProcess, OpenProcess, TerminateProcess, BELOW_NORMAL_PRIORITY_CLASS,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
 };
 
 /// 持有 Job Object 句柄；Drop（含进程异常终止时的 OS 句柄回收）即击杀
@@ -36,6 +37,12 @@ unsafe impl Send for ProcessJob {}
 unsafe impl Sync for ProcessJob {}
 
 impl ProcessJob {
+    /// Terminate the retained job identity, including descendants, without a PID lookup.
+    pub fn terminate(&self) -> Result<()> {
+        unsafe { TerminateJobObject(self.handle, 1) }
+            .map_err(|error| anyhow!("TerminateJobObject failed: {error}"))
+    }
+
     /// 建 Job + 分配进程 + 应用资源策略，返回策略结果供上层上报。
     ///
     /// spawn 与 assign 之间存在极小窗口（此间创建的孙进程不入 Job），可接受。
@@ -312,5 +319,39 @@ mod tests {
                 None => std::thread::sleep(Duration::from_millis(50)),
             }
         }
+    }
+}
+
+/// Retained fallback identity for a child which could not be assigned to a Job.
+pub struct ProcessHandle(HANDLE);
+// SAFETY: the owned process handle supports concurrent OS operations and closes once.
+unsafe impl Send for ProcessHandle {}
+unsafe impl Sync for ProcessHandle {}
+impl ProcessHandle {
+    pub fn open(pid: u32) -> Result<Self> {
+        unsafe {
+            OpenProcess(
+                PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
+                false,
+                pid,
+            )
+        }
+        .map(Self)
+        .map_err(|error| anyhow!("OpenProcess failed: {error}"))
+    }
+    pub fn terminate(&self) -> Result<()> {
+        let mut code = 0;
+        unsafe { GetExitCodeProcess(self.0, &mut code) }
+            .map_err(|error| anyhow!("GetExitCodeProcess failed: {error}"))?;
+        if code != 259 {
+            return Ok(());
+        } // STILL_ACTIVE
+        unsafe { TerminateProcess(self.0, 1) }
+            .map_err(|error| anyhow!("TerminateProcess failed: {error}"))
+    }
+}
+impl Drop for ProcessHandle {
+    fn drop(&mut self) {
+        let _ = unsafe { CloseHandle(self.0) };
     }
 }

@@ -1,3 +1,4 @@
+import { createTerminalInputQueue } from "./terminalInputQueue";
 /**
  * 终端服务 - 与后端终端会话交互
  *
@@ -40,11 +41,10 @@ import {
   addSubscriber, assertCreateSessionRequest, compactCreateSessionRequest,
   countTerminalInputChars, debugTerminalService, disposeTerminalSessionResources,
   isSessionClaimedError, isWebSocketDesyncMessage, parseWebSocketOutput,
-  removeSubscriber, splitInputRunsBySource, summarizeTerminalInput,
+  removeSubscriber, summarizeTerminalInput,
 } from "./terminalServiceShared";
 export { isSessionClaimedError };import type {
   TerminalBackendClientInfo,
-  TerminalInputQueue,
   TerminalReplaySnapshot,
   TerminalWriteOptions, TerminalWriteSource,
 } from "./terminalServiceShared";
@@ -143,14 +143,15 @@ const outputCallbacks = new Map<string, Set<(data: string, endSeq?: number) => v
 const exitCallbacks = new Map<string, Set<(exitCode: number) => void>>();
 const desyncCallbacks = new Map<string, Set<() => void>>();
 const webSockets = new Map<string, WebSocket>();
-const inputQueues = new Map<string, TerminalInputQueue>();
+const inputQueue = createTerminalInputQueue(writeTerminalInputNow);
+const { enqueueTerminalInput, drainTerminalInputQueue, clearTerminalInputQueue, getTerminalInputQueueStats } = inputQueue;
+export { getTerminalInputQueueStats };
 const outputViewPriorities = new Map<string, Map<string, TerminalOutputViewVisibility>>();
 const hiddenOutputSessions = new Set<string>();
 const outputDesyncLatched = new Set<string>();
 const hiddenQueryCallbacks = new Map<string, Set<(data: string) => void>>();
 /** 已 kill 的 session ID 集合，用于事件监听器跳过已死 session */
 export const killedSessions = new Set<string>();
-const INPUT_BATCH_DELAY_MS = 8;
 let listenersInitialized = false;
 let unlistenOutput: UnlistenFn | null = null;
 let unlistenExit: UnlistenFn | null = null;
@@ -240,120 +241,6 @@ export function setHiddenTerminalOutputSessions(sessionIds: readonly string[]): 
   }
 }
 
-function enqueueTerminalInput(sessionId: string, data: string, source: TerminalWriteSource, traceId?: number): Promise<void> {
-  if (data.length === 0) return Promise.resolve();
-
-  let queue = inputQueues.get(sessionId);
-  if (!queue) {
-    queue = {
-      pending: [],
-      timer: null,
-      flushing: false,
-      idleResolvers: [],
-    };
-    inputQueues.set(sessionId, queue);
-  }
-
-  const result = new Promise<void>((resolve, reject) => {
-    queue.pending.push({ data, source, traceId, resolve, reject });
-    debugTerminalService("input.queue.enqueue", {
-      sessionId,
-      traceId: traceId ?? null,
-      pendingChunks: queue.pending.length,
-      flushing: queue.flushing,
-      data: summarizeTerminalInput(data),
-    });
-  });
-
-  if (!queue.timer && !queue.flushing) {
-    queue.timer = setTimeout(() => void flushTerminalInputQueue(sessionId), INPUT_BATCH_DELAY_MS);
-  }
-
-  return result;
-}
-
-async function flushTerminalInputQueue(sessionId: string): Promise<void> {
-  const queue = inputQueues.get(sessionId);
-  if (!queue) return;
-  if (queue.flushing) return;
-  queue.timer = null;
-  if (queue.pending.length === 0) return;
-
-  const batch = queue.pending.splice(0);
-  const data = batch.map((item) => item.data).join("");
-  const traceIds = batch.map((item) => item.traceId ?? null);
-  queue.flushing = true;
-  debugTerminalService("input.queue.flush.begin", {
-    sessionId,
-    traceIds,
-    chunkCount: batch.length,
-    data: summarizeTerminalInput(data),
-  });
-  try {
-    for (const run of splitInputRunsBySource(batch)) await writeTerminalInputNow(sessionId, run.items.map((i) => i.data).join(""), run.source);
-    debugTerminalService("input.queue.flush.ok", {
-      sessionId,
-      traceIds,
-      data: summarizeTerminalInput(data),
-    });
-    for (const item of batch) item.resolve();
-  } catch (error) {
-    debugTerminalService("input.queue.flush.error", {
-      sessionId,
-      traceIds,
-      error: error instanceof Error ? error.message : String(error),
-      data: summarizeTerminalInput(data),
-    });
-    for (const item of batch) item.reject(error);
-  } finally {
-    const current = inputQueues.get(sessionId);
-    if (current !== queue) return;
-    queue.flushing = false;
-    if (queue.pending.length > 0) {
-      queue.timer = setTimeout(() => void flushTerminalInputQueue(sessionId), 0);
-    } else {
-      const resolvers = queue.idleResolvers.splice(0);
-      for (const resolve of resolvers) resolve();
-      inputQueues.delete(sessionId);
-    }
-  }
-}
-
-function drainTerminalInputQueue(sessionId: string): Promise<void> {
-  const queue = inputQueues.get(sessionId);
-  if (!queue) return Promise.resolve();
-  if (queue.timer) {
-    clearTimeout(queue.timer);
-    queue.timer = null;
-    void flushTerminalInputQueue(sessionId);
-  }
-  if (!queue.flushing && queue.pending.length === 0) {
-    inputQueues.delete(sessionId);
-    return Promise.resolve();
-  }
-  return new Promise<void>((resolve) => {
-    queue.idleResolvers.push(resolve);
-  });
-}
-
-function clearTerminalInputQueue(sessionId: string): void {
-  const queue = inputQueues.get(sessionId);
-  if (!queue) return;
-  if (queue.timer) {
-    clearTimeout(queue.timer);
-  }
-  for (const item of queue.pending.splice(0)) {
-    debugTerminalService("input.queue.clear", {
-      sessionId,
-      traceId: item.traceId ?? null,
-      data: summarizeTerminalInput(item.data),
-    });
-    item.resolve();
-  }
-  for (const resolve of queue.idleResolvers.splice(0)) resolve();
-  inputQueues.delete(sessionId);
-}
-
 function notifySessionClaimLost(sessionId: string): void {
   window.dispatchEvent(new CustomEvent("cc-panes:terminal-claim-lost", {
     detail: { sessionId },
@@ -403,7 +290,10 @@ export async function ensureListeners(): Promise<void> {
           dataLength: data.length,
           pendingChunks: pendingChunkCount(sessionId),
         });
-        if (appendPendingOutput(sessionId, data, endSeq) === "overflowed") {
+        const outcome = appendPendingOutput(sessionId, data, endSeq);
+        // 已进前端有界缓冲或被丢弃，后端都不应再计在途；flush 时再 ACK 因 max-merge 无害。
+        noteOutputConsumed(sessionId, endSeq, data.length);
+        if (outcome === "overflowed") {
           dispatchLatchedDesync(sessionId);
         }
       }
@@ -482,7 +372,7 @@ if (import.meta.hot) {
     outputDesyncLatched.clear();
     hiddenQueryCallbacks.clear();
     clearAllPendingOutput();
-    for (const sessionId of Array.from(inputQueues.keys())) clearTerminalInputQueue(sessionId);
+    inputQueue.clearAll();
     killedSessions.clear();
     for (const socket of webSockets.values()) socket.close();
     webSockets.clear();
@@ -502,7 +392,7 @@ export function _resetListenersForTest(): void {
   outputDesyncLatched.clear();
   hiddenQueryCallbacks.clear();
   clearAllPendingOutput();
-  for (const sessionId of Array.from(inputQueues.keys())) clearTerminalInputQueue(sessionId);
+  inputQueue.clearAll();
   killedSessions.clear();
   listenersInitialized = false;
   unlistenOutput = null;
@@ -539,7 +429,9 @@ function ensureWebSocket(sessionId: string): void {
     const { data, endSeq } = parseWebSocketOutput(event.data);
     if (!data) return;
     if (dispatchOutput(sessionId, data, endSeq)) return;
-    if (appendPendingOutput(sessionId, data, endSeq) === "overflowed") {
+    const outcome = appendPendingOutput(sessionId, data, endSeq);
+    noteOutputConsumed(sessionId, endSeq, data.length);
+    if (outcome === "overflowed") {
       dispatchLatchedDesync(sessionId);
     }
   };
@@ -645,7 +537,7 @@ export const terminalService = {
   ): Promise<void> {
     const source = options.source ?? "user-keyboard";
     if (source === "user-keyboard") outputScheduler.markActive(sessionId, true);
-    await enqueueTerminalInput(sessionId, data, source, options.traceId);
+    await enqueueTerminalInput(sessionId, data, source, options.traceId, options.flushImmediately === true);
     if (source === "user-keyboard") {
       const charCount = countTerminalInputChars(data);
       void usageStatsService.recordInputChars(sessionId, charCount).catch((error) => {

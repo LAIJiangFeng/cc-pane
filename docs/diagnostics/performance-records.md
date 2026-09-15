@@ -88,3 +88,31 @@ bootId、版本和时间，再区分：进程私有内存增长、JS 堆增长�
   采样失败数为 0，最近后端采样耗时 51/56/55 ms。未开启远程调试端口。
 - 备份程序：
   `C:\Users\wuxiran\AppData\Local\cc-panes\backups\cc-panes-before-diagnostics-20260907-040237.exe`。
+
+## WSL 终端停更的后端诊断
+
+Codex 的 OSC 0/2 标题可能以中文或 Unicode 省略号结束。标题扫描器必须从
+标题正文的起点计算后续偏移；少算 `0;`/`2;` 两字节会落入 UTF-8 字符内部，
+触发读线程 panic，表现为 CLI 仍活着、输入仍可写入，但终端画面不再更新。
+`readerAlive`、`readerPanicked`、`readerPhase` 和 `readerPhaseAgeMs` 可区分
+线程退出和处理阻塞。daemon 日志会记录 panic 的代码位置，不记录 panic 载荷。
+
+Codex 上下文统计会读取 WSL 的 UNC 路径。该查询、历史用量查询和输入计数写入
+现在均在阻塞工作线程执行，避免一次慢文件查询或数据库等待堵住窗口的 IPC
+命令处理。若 daemon HTTP 很快，而桌面 IPC 与 `frontendAgeMs` 同时显著变慢，
+需要沿这类同步命令检查，不能只调整 xterm 渲染器。
+
+页面仍能操作而终端不更新时，可在开发版控制台调用
+`await window.__ccPanes.terminalDiagnostics(sessionId)`。其中 `backendFlow`
+现在经 daemon 的鉴权只读接口 `/api/sessions/{id}/output-flow` 返回真实会话水位，
+不再因桌面进程没有本地 PTY 而始终为 null。旧 daemon 不支持时仍返回 null。
+
+- `readerBlockedMs` 只表示正在等待读取，长时间空闲也会很大，不能单凭它判定死锁。
+- `parked` 与 `inFlightBytes` 用于区分输出流控暂停；读调用返回后会清除读取等待标记。
+- Windows 恢复探测仅在用户输入超过 5 秒仍无输出时触发，同一次停滞最多尝试一次。
+  终端协议回复及焦点报告不触发探测；失败也不会形成重复 resize 循环。
+- `conptyKickCount` 表示成功完成尺寸恢复操作的次数，并不证明 CLI 任务已经恢复。
+  仍需确认后续输出序号增长，或用户输入得到响应。
+- daemon `/api/daemon/status` 的 `binarySha256` 在进程启动时记录。桌面用它与
+  配套二进制内容比较；有存活会话或其他桌面客户端时继续推迟换代。
+  daemon 的 crate `version` 不等于桌面应用版本，文件 mtime 也不能与进程启动时间比较新旧。

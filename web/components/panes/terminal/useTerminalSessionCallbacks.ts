@@ -155,6 +155,7 @@ export function useTerminalSessionCallbacks({
         onReconnectRef,
         unbindSessionCallbacks,
         bindSessionCallbacks,
+        syncGeometry: () => layoutSchedulerRef.current?.flush("session.reconnect", { force: true, forceBackendSync: true, allowInactive: true }),
       }),
     [bindSessionCallbacks, unbindSessionCallbacks],
   );

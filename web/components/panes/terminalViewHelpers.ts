@@ -14,6 +14,9 @@ import type { TerminalThemePalette } from "./terminalTheme";
 export const IS_MAC =
   typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/.test(navigator.platform);
 
+export const IS_WINDOWS =
+  typeof navigator !== "undefined" && /Win/i.test(navigator.platform);
+
 /** [`resolveNativeMenuBlock`] 的裁决。`blocked` 为假时两个字段都无意义。 */
 export interface NativeMenuBlockDecision {
   /** 是否要 preventDefault 掉原生菜单。 */

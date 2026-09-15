@@ -52,6 +52,16 @@ pub fn read_endpoint(data_dir: &Path) -> Option<(u16, String)> {
     parse_endpoint(&content)
 }
 
+/// Credentials remain readable for restart, but retired endpoints are not launch targets.
+pub fn read_active_endpoint(data_dir: &Path) -> Option<(u16, String)> {
+    let content = std::fs::read_to_string(data_dir.join(ORCHESTRATOR_MANIFEST_FILE)).ok()?;
+    let manifest: serde_json::Value = serde_json::from_str(&content).ok()?;
+    if manifest.get("lifecycle").and_then(|value| value.as_str()) == Some("stopped") {
+        return None;
+    }
+    parse_endpoint(&content)
+}
+
 pub fn parse_endpoint(content: &str) -> Option<(u16, String)> {
     let json: serde_json::Value = serde_json::from_str(content).ok()?;
     let url = json.pointer("/mcpServers/ccpanes/url")?.as_str()?;
@@ -72,9 +82,82 @@ pub fn parse_orchestrator_port_from_url(url: &str) -> Option<u16> {
     parsed.port()
 }
 
+/// Legacy manifests have no identity. New manifests must match the serving process.
+pub fn health_matches_manifest(response: &str, manifest: Option<&serde_json::Value>) -> bool {
+    let Some((headers, body)) = response.split_once("\r\n\r\n") else {
+        return false;
+    };
+    if headers
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        != Some("200")
+    {
+        return false;
+    }
+    let Ok(health) = serde_json::from_str::<serde_json::Value>(body) else {
+        return false;
+    };
+    if health["status"].as_str() != Some("ok") {
+        return false;
+    }
+    if let Some(service) = health.get("service") {
+        if service.as_str() != Some("cc-panes-orchestrator") {
+            return false;
+        }
+    }
+    if let Some(manifest) = manifest {
+        if manifest["lifecycle"].as_str() == Some("stopped") {
+            return false;
+        }
+        if manifest.get("pid").is_some() || manifest.get("startedAt").is_some() {
+            return health["service"].as_str() == Some("cc-panes-orchestrator")
+                && health["pid"].as_u64().is_some()
+                && health["pid"].as_u64() == manifest["pid"].as_u64()
+                && health["startedAt"].as_u64().is_some()
+                && health["startedAt"].as_u64() == manifest["startedAt"].as_u64();
+        }
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn health_probe_rejects_stale_identity_and_incidental_ok_text() {
+        let response = |body: &str| format!("HTTP/1.0 200 OK\r\n\r\n{body}");
+        assert!(!health_matches_manifest(
+            &response(r#"{"status":"failed","hint":"ok"}"#),
+            None
+        ));
+        assert!(health_matches_manifest(
+            &response(r#"{"status":"ok"}"#),
+            None
+        ));
+        let manifest = serde_json::json!({"pid":7,"startedAt":10});
+        assert!(!health_matches_manifest(
+            &response(r#"{"status":"ok"}"#),
+            Some(&manifest)
+        ));
+        assert!(!health_matches_manifest(
+            &response(
+                r#"{"status":"ok","service":"cc-panes-orchestrator","pid":7,"startedAt":11}"#
+            ),
+            Some(&manifest)
+        ));
+        assert!(health_matches_manifest(
+            &response(
+                r#"{"status":"ok","service":"cc-panes-orchestrator","pid":7,"startedAt":10}"#
+            ),
+            Some(&manifest)
+        ));
+        assert!(!health_matches_manifest(
+            &response(r#"{"status":"ok","service":"other"}"#),
+            None
+        ));
+    }
 
     #[test]
     fn parse_orchestrator_port_from_url_extracts_port() {

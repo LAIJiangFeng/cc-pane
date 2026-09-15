@@ -26,8 +26,28 @@ function createRenderableHost(width = 640, height = 360): HTMLElement {
   return host;
 }
 
+function createCompositionFrameScheduler() {
+  let nextFrameHandle = 1;
+  const frameCallbacks = new Map<number, FrameRequestCallback>();
+  return {
+    compositionFrameScheduler: {
+      request: vi.fn((callback: FrameRequestCallback) => {
+        const handle = nextFrameHandle++;
+        frameCallbacks.set(handle, callback);
+        return handle;
+      }),
+      cancel: vi.fn((handle: number) => frameCallbacks.delete(handle)),
+    },
+    flushFrame: () => {
+      const callbacks = [...frameCallbacks.values()];
+      frameCallbacks.clear();
+      callbacks.forEach((callback) => callback(0));
+    },
+  };
+}
+
 describe("terminal layout scheduler", () => {
-  afterEach(() => vi.useRealTimers());
+  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
   it("detects hidden or zero-sized terminal hosts", () => {
     expect(isTerminalHostRenderable(null)).toBe(false);
@@ -37,6 +57,103 @@ describe("terminal layout scheduler", () => {
 
     host.style.display = "none";
     expect(isTerminalHostRenderable(host)).toBe(false);
+  });
+
+  it("rejects a host with no measurable height", () => {
+    const host = createRenderableHost(88, 0);
+    expect(isTerminalHostRenderable(host)).toBe(false);
+  });
+
+  it("does not resize the PTY when Fit proposes a degenerate size", () => {
+    const host = createRenderableHost(640, 360);
+    const term = { cols: 80, rows: 24 } as Terminal;
+    const fitAddon = {
+      proposeDimensions: vi.fn(() => ({ cols: 1, rows: 0 })),
+      fit: vi.fn(),
+    } as unknown as FitAddon;
+    const resizeBackend = vi.fn();
+    const logger = vi.fn();
+    const scheduler = createTerminalLayoutScheduler({
+      getTerminal: () => term,
+      getFitAddon: () => fitAddon,
+      getHost: () => host,
+      getSessionId: () => "s1",
+      isActive: () => true,
+      repaint: vi.fn(),
+      resizeBackend,
+      logger,
+    });
+    expect(scheduler.flush("resize-observer.fit")).toBeNull();
+    expect(fitAddon.fit).not.toHaveBeenCalled();
+    expect(resizeBackend).not.toHaveBeenCalled();
+    expect(logger).toHaveBeenCalledWith(
+      "layout.skip.degenerate",
+      expect.objectContaining({ cols: 1, rows: 0 }),
+    );
+    scheduler.dispose();
+  });
+
+  it("refocuses the terminal when fit blurs the helper textarea", () => {
+    const host = createRenderableHost();
+    const textarea = document.createElement("textarea");
+    document.body.appendChild(textarea);
+    const term = {
+      cols: 80,
+      rows: 24,
+      textarea,
+      focus: vi.fn(() => textarea.focus()),
+    } as unknown as Terminal;
+    const fitAddon = {
+      fit: vi.fn(() => {
+        textarea.blur();
+      }),
+    } as unknown as FitAddon;
+    const scheduler = createTerminalLayoutScheduler({
+      getTerminal: () => term,
+      getFitAddon: () => fitAddon,
+      getHost: () => host,
+      getSessionId: () => "session-1",
+      isActive: () => true,
+      repaint: vi.fn(),
+      resizeBackend: vi.fn(),
+      logger: vi.fn(),
+    });
+
+    textarea.focus();
+    expect(document.activeElement).toBe(textarea);
+    scheduler.flush("window.focus", { force: true, forceBackendSync: true });
+    expect(term.focus).toHaveBeenCalledOnce();
+    expect(document.activeElement).toBe(textarea);
+    scheduler.dispose();
+    textarea.remove();
+  });
+
+  it("does not steal focus from another input during window-focus recovery", () => {
+    const host = createRenderableHost();
+    const other = document.createElement("input");
+    document.body.appendChild(other);
+    const term = {
+      cols: 80,
+      rows: 24,
+      textarea: document.createElement("textarea"),
+      focus: vi.fn(),
+    } as unknown as Terminal;
+    const scheduler = createTerminalLayoutScheduler({
+      getTerminal: () => term,
+      getFitAddon: () => ({ fit: vi.fn() }) as unknown as FitAddon,
+      getHost: () => host,
+      getSessionId: () => "session-1",
+      isActive: () => true,
+      repaint: vi.fn(),
+      resizeBackend: vi.fn(),
+      logger: vi.fn(),
+    });
+
+    other.focus();
+    scheduler.flush("window.focus", { force: true, forceBackendSync: true });
+    expect(term.focus).not.toHaveBeenCalled();
+    scheduler.dispose();
+    other.remove();
   });
 
   it("fits, repaints, and resizes the backend when visible", () => {
@@ -121,6 +238,7 @@ describe("terminal layout scheduler", () => {
     expect(scheduler.flush("inactive")).toBeNull();
     expect(fitAddon.fit).not.toHaveBeenCalled();
     expect(scheduler.hasPendingLayout()).toBe(true);
+    scheduler.dispose();
   });
 
   it("keeps zero-sized hosts dirty and fits once the host becomes visible", () => {
@@ -162,9 +280,11 @@ describe("terminal layout scheduler", () => {
     scheduler.flush("visible", { allowInactive: true });
     expect(fitAddon.fit).toHaveBeenCalledOnce();
     expect(scheduler.hasPendingLayout()).toBe(false);
+    scheduler.dispose();
   });
 
-  it("rejects the tiny host geometry reported while the window is minimized", () => {
+  it("does not resize while the document is hidden", () => {
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
     const host = createRenderableHost(1, 1);
     const fitAddon = { fit: vi.fn() } as unknown as FitAddon;
     const scheduler = createTerminalLayoutScheduler({
@@ -181,29 +301,105 @@ describe("terminal layout scheduler", () => {
     expect(scheduler.flush("minimized")).toBeNull();
     expect(fitAddon.fit).not.toHaveBeenCalled();
     expect(scheduler.hasPendingLayout()).toBe(true);
+    scheduler.dispose();
   });
 
-  it("recovers after IME blur without compositionend and cannot be preempted by an ordinary flush", () => {
+  it("retries fit after a collapsed host becomes renderable", () => {
+    vi.useFakeTimers();
+    const host = createRenderableHost(88, 0);
+    const fitAddon = { fit: vi.fn() } as unknown as FitAddon;
+    let width = 88;
+    let height = 0;
+    Object.defineProperty(host, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({
+        width,
+        height,
+        top: 0,
+        left: 0,
+        right: width,
+        bottom: height,
+        x: 0,
+        y: 0,
+        toJSON: () => {},
+      }),
+    });
+    const scheduler = createTerminalLayoutScheduler({
+      getTerminal: () => ({ cols: 80, rows: 24 } as Terminal),
+      getFitAddon: () => fitAddon,
+      getHost: () => host,
+      getSessionId: () => "session-1",
+      isActive: () => true,
+      repaint: vi.fn(),
+      resizeBackend: vi.fn(),
+      logger: vi.fn(),
+    });
+
+    expect(scheduler.flush("session.create.fit", { allowInactive: true })).toBeNull();
+    expect(fitAddon.fit).not.toHaveBeenCalled();
+
+    width = 1112;
+    height = 1254;
+    vi.advanceTimersByTime(200);
+    expect(fitAddon.fit).toHaveBeenCalledOnce();
+    scheduler.dispose();
+    vi.useRealTimers();
+  });
+
+  it("blocks layout during IME and skips recovery fit when cols/rows are unchanged", () => {
     vi.useFakeTimers();
     const host = createRenderableHost();
-    const fitAddon = { fit: vi.fn() } as unknown as FitAddon;
+    const fitAddon = {
+      fit: vi.fn(),
+      proposeDimensions: vi.fn(() => ({ cols: 80, rows: 24 })),
+    } as unknown as FitAddon;
     const textarea = document.createElement("textarea");
     const term = { cols: 80, rows: 24, textarea } as unknown as Terminal;
-    let nextFrameHandle = 1;
-    const frameCallbacks = new Map<number, FrameRequestCallback>();
-    const compositionFrameScheduler = {
-      request: vi.fn((callback: FrameRequestCallback) => {
-        const handle = nextFrameHandle++;
-        frameCallbacks.set(handle, callback);
-        return handle;
-      }),
-      cancel: vi.fn((handle: number) => frameCallbacks.delete(handle)),
-    };
-    const flushFrame = () => {
-      const callbacks = [...frameCallbacks.values()];
-      frameCallbacks.clear();
-      callbacks.forEach((callback) => callback(0));
-    };
+    const { compositionFrameScheduler, flushFrame } = createCompositionFrameScheduler();
+    const repaint = vi.fn();
+    const logger = vi.fn();
+    const scheduler = createTerminalLayoutScheduler({
+      getTerminal: () => term,
+      getFitAddon: () => fitAddon,
+      getHost: () => host,
+      getSessionId: () => "session-1",
+      isActive: () => true,
+      compositionFrameScheduler,
+      repaint,
+      resizeBackend: vi.fn(),
+      logger,
+    });
+
+    textarea.dispatchEvent(new CompositionEvent("compositionstart"));
+    expect(scheduler.flush("composition.resize", { force: true })).toBeNull();
+    expect(fitAddon.fit).not.toHaveBeenCalled();
+    expect(scheduler.hasPendingLayout()).toBe(true);
+
+    textarea.dispatchEvent(new FocusEvent("blur"));
+    flushFrame();
+    flushFrame();
+
+    expect(fitAddon.fit).not.toHaveBeenCalled();
+    expect(repaint).not.toHaveBeenCalled();
+    expect(scheduler.hasPendingLayout()).toBe(false);
+    expect(logger).toHaveBeenCalledWith(
+      "layout.skip.unchanged",
+      expect.objectContaining({ reason: "ime.compositionend", cols: 80, rows: 24 }),
+    );
+    scheduler.dispose();
+  });
+
+  it("does not probe dimensions after IME when no layout was deferred", () => {
+    vi.useFakeTimers();
+    const host = createRenderableHost();
+    const proposeDimensions = vi.fn(() => ({ cols: 80, rows: 24 }));
+    const fitAddon = {
+      fit: vi.fn(),
+      proposeDimensions,
+    } as unknown as FitAddon;
+    const textarea = document.createElement("textarea");
+    const term = { cols: 80, rows: 24, textarea } as unknown as Terminal;
+    const { compositionFrameScheduler, flushFrame } = createCompositionFrameScheduler();
     const scheduler = createTerminalLayoutScheduler({
       getTerminal: () => term,
       getFitAddon: () => fitAddon,
@@ -217,20 +413,84 @@ describe("terminal layout scheduler", () => {
     });
 
     textarea.dispatchEvent(new CompositionEvent("compositionstart"));
-    expect(scheduler.flush("composition.resize", { force: true })).toBeNull();
-    expect(fitAddon.fit).not.toHaveBeenCalled();
-    expect(scheduler.hasPendingLayout()).toBe(true);
-
     textarea.dispatchEvent(new FocusEvent("blur"));
     flushFrame();
     flushFrame();
-    expect(scheduler.flush("ordinary.flush", { force: true })).toBeNull();
-    vi.advanceTimersByTime(149);
+
     expect(fitAddon.fit).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(1);
+    expect(proposeDimensions).not.toHaveBeenCalled();
+    scheduler.dispose();
+  });
+
+  it("still fits after IME recovery when proposed dimensions differ", () => {
+    vi.useFakeTimers();
+    const host = createRenderableHost();
+    const textarea = document.createElement("textarea");
+    const term = { cols: 80, rows: 24, textarea } as unknown as Terminal;
+    const fitAddon = {
+      fit: vi.fn(() => {
+        (term as unknown as { cols: number; rows: number }).cols = 100;
+        (term as unknown as { cols: number; rows: number }).rows = 30;
+      }),
+      proposeDimensions: vi.fn(() => ({ cols: 100, rows: 30 })),
+    } as unknown as FitAddon;
+    const { compositionFrameScheduler, flushFrame } = createCompositionFrameScheduler();
+    const repaint = vi.fn();
+    const scheduler = createTerminalLayoutScheduler({
+      getTerminal: () => term,
+      getFitAddon: () => fitAddon,
+      getHost: () => host,
+      getSessionId: () => "session-1",
+      isActive: () => true,
+      compositionFrameScheduler,
+      repaint,
+      resizeBackend: vi.fn(),
+      logger: vi.fn(),
+    });
+
+    textarea.dispatchEvent(new CompositionEvent("compositionstart"));
+    expect(scheduler.flush("composition.resize", { force: true })).toBeNull();
+    textarea.dispatchEvent(new FocusEvent("blur"));
+    flushFrame();
+    flushFrame();
 
     expect(fitAddon.fit).toHaveBeenCalledOnce();
+    expect(repaint).toHaveBeenCalledWith("ime.compositionend");
     expect(scheduler.hasPendingLayout()).toBe(false);
+    scheduler.dispose();
+  });
+
+  it("still fits IME recovery when a backend sync is pending even if size is unchanged", () => {
+    vi.useFakeTimers();
+    const host = createRenderableHost();
+    const textarea = document.createElement("textarea");
+    const term = { cols: 80, rows: 24, textarea } as unknown as Terminal;
+    const fitAddon = {
+      fit: vi.fn(),
+      proposeDimensions: vi.fn(() => ({ cols: 80, rows: 24 })),
+    } as unknown as FitAddon;
+    const { compositionFrameScheduler, flushFrame } = createCompositionFrameScheduler();
+    const resizeBackend = vi.fn();
+    const scheduler = createTerminalLayoutScheduler({
+      getTerminal: () => term,
+      getFitAddon: () => fitAddon,
+      getHost: () => host,
+      getSessionId: () => "session-1",
+      isActive: () => true,
+      compositionFrameScheduler,
+      repaint: vi.fn(),
+      resizeBackend,
+      logger: vi.fn(),
+    });
+
+    textarea.dispatchEvent(new CompositionEvent("compositionstart"));
+    expect(scheduler.flush("recovery.fit", { force: true, forceBackendSync: true })).toBeNull();
+    textarea.dispatchEvent(new FocusEvent("blur"));
+    flushFrame();
+    flushFrame();
+
+    expect(fitAddon.fit).toHaveBeenCalledOnce();
+    expect(resizeBackend).toHaveBeenCalledWith(80, 24);
     scheduler.dispose();
   });
 

@@ -7,7 +7,7 @@ use crate::models::{
     TerminalCheckpoint, TerminalExit, TerminalOutput, TerminalOutputFlowStat,
     TerminalRecoverySnapshot, TerminalReplaySnapshot, WslLaunchInfo,
 };
-use crate::pty::{spawn_pty, PtyConfig, PtyProcess};
+use crate::pty::{spawn_pty, PtyConfig, PtyProcess, ReaderIoWatch};
 use crate::services::pi_rpc_service::PiManagedStateCleanup;
 use crate::services::{
     managed_provider_conflict_env_keys, resolve_provider_plan, validate_provider_runtime,
@@ -37,6 +37,7 @@ mod csi_mode_detect;
 mod cursor_chat_capture;
 mod osc_resume_capture;
 mod osc_state_detect;
+mod output_batch_clock;
 mod shell_integration;
 #[cfg(windows)]
 mod windows_codex;
@@ -48,7 +49,8 @@ use self::wsl_codex::{
 };
 use super::ssh_terminal_service::{spawn_ssh_terminal, SshTerminalConfig};
 use super::terminal_output_flow::{
-    OutputFlowGate, ParkOutcome, FAILSAFE_TIMEOUTS_BEFORE_DESYNC, PRODUCER_PAUSE_FAILSAFE,
+    OutputFlowDiagnostics, OutputFlowGate, ParkOutcome, FAILSAFE_TIMEOUTS_BEFORE_DESYNC,
+    PRODUCER_PAUSE_FAILSAFE,
 };
 
 /// 供会话历史在恢复 Codex 前复用现有 rollout 预检，不改变捕获链行为。
@@ -1314,6 +1316,7 @@ impl ReplayBuffer {
     }
 }
 
+/// A quiet read alone is normal. Only unanswered input permits one recovery probe.
 /// 终端会话
 struct TerminalSession {
     launch_id: Option<String>,
@@ -1323,8 +1326,11 @@ struct TerminalSession {
     /// 纯 shell 与 TUI agent 对「多行文本里的换行」期待相反。
     cli_tool: CliTool,
     process: Arc<dyn PtyProcess>,
-    writer_tx: mpsc::Sender<WriterCommand>,
+    writer_tx: mpsc::SyncSender<WriterCommand>,
     status: Arc<Mutex<SessionStatus>>,
+    /// Daemon sessions receive hook statuses over HTTP without owning the app's
+    /// state machine. Keep the same 30s authority window in the PTY process.
+    hook_updated_at: Arc<Mutex<Option<Instant>>>,
     exit_code: Arc<Mutex<Option<i32>>>,
     last_output_at: Arc<Mutex<Instant>>,
     /// reader 线程取消标志：kill() 设置为 true，reader 线程检查后退出
@@ -1337,6 +1343,8 @@ struct TerminalSession {
     paste_ready: Arc<AtomicBool>,
     /// 投递记账（B-5）：已 emit 但前端未确认的字节数，Stage 3 的暂停水位输入。
     output_flow: Arc<OutputFlowGate>,
+    /// reader 心跳：把「卡在 read()」和 gate park 分开。
+    reader_watch: Arc<ReaderIoWatch>,
     /// Managed Pi launches own an isolated adapter state directory. Native Pi
     /// has no descriptor and therefore never reaches this cleanup path.
     managed_pi_state_cleanup: Option<PiManagedStateCleanup>,
@@ -1421,7 +1429,7 @@ pub struct OrchestratorInfo {
 /// 无关本地进程回收；裸 connect 会误判可达，进而把真实 token 注入陌生进程。
 /// 这里改为对 `/api/health` 发一个最小 HTTP 请求，校验返回体是本 orchestrator 独有的
 /// `{"status":"ok"}`——陌生监听者不会实现该路由与该载荷，从而杜绝 token 外泄。
-fn local_orchestrator_endpoint_reachable(port: u16) -> bool {
+fn local_orchestrator_endpoint_reachable(port: u16, data_dir: &std::path::Path) -> bool {
     use std::io::{Read, Write};
 
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
@@ -1454,12 +1462,14 @@ fn local_orchestrator_endpoint_reachable(port: u16) -> bool {
     }
 
     let text = String::from_utf8_lossy(&response);
-    let status_ok = text
-        .lines()
-        .next()
-        .map(|line| line.contains("200"))
-        .unwrap_or(false);
-    status_ok && text.contains("\"status\"") && text.contains("\"ok\"")
+    let manifest =
+        std::fs::read_to_string(data_dir.join(orchestrator_manifest::ORCHESTRATOR_MANIFEST_FILE))
+            .ok()
+            .filter(|content| {
+                orchestrator_manifest::parse_endpoint(content).is_some_and(|(p, _)| p == port)
+            })
+            .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok());
+    orchestrator_manifest::health_matches_manifest(&text, manifest.as_ref())
 }
 
 struct DeadBufferEntry {
@@ -1532,8 +1542,7 @@ enum WriterCommand {
     },
 }
 
-const TERMINAL_WRITE_CHUNK_SIZE: usize = 512;
-const TERMINAL_WRITE_INTER_CHUNK_DELAY: Duration = Duration::from_millis(30);
+const TERMINAL_WRITE_CHUNK_SIZE: usize = 16 * 1024;
 const TERMINAL_WRITE_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 const LIVE_OUTPUT_MAX_LINES: usize = 20_000;
 const LIVE_OUTPUT_MAX_BYTES: usize = 20 * 1024 * 1024;
@@ -1600,37 +1609,14 @@ fn submit_delay_ms(text_len: usize, paste_ready: bool) -> u64 {
 }
 
 fn summarize_input_bytes(data: &[u8]) -> serde_json::Value {
-    let text = String::from_utf8_lossy(data);
-    let chars: Vec<String> = text
-        .chars()
-        .take(24)
-        .map(|ch| ch.escape_default().to_string())
-        .collect();
-    let code_points: Vec<String> = text
-        .chars()
-        .take(24)
-        .map(|ch| format!("{:x}", ch as u32))
-        .collect();
-    let bytes: Vec<String> = data
-        .iter()
-        .take(32)
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
-    serde_json::json!({
-        "chars": chars,
-        "charCount": text.chars().count(),
-        "utf8Bytes": data.len(),
-        "codePoints": code_points,
-        "bytes": bytes,
-        "truncated": text.chars().count() > 24 || data.len() > 32,
-    })
+    serde_json::json!({ "charCount": String::from_utf8_lossy(data).chars().count(), "utf8Bytes": data.len() })
 }
 
 fn spawn_terminal_writer(
     session_id: String,
     mut writer: Box<dyn Write + Send>,
-) -> mpsc::Sender<WriterCommand> {
-    let (writer_tx, writer_rx) = mpsc::channel::<WriterCommand>();
+) -> mpsc::SyncSender<WriterCommand> {
+    let (writer_tx, writer_rx) = mpsc::sync_channel::<WriterCommand>(64);
 
     thread::spawn(move || {
         let mut logged_first_write = false;
@@ -1671,15 +1657,18 @@ fn spawn_terminal_writer(
     writer_tx
 }
 
-fn write_via_writer_tx(writer_tx: &mpsc::Sender<WriterCommand>, data: Vec<u8>) -> Result<()> {
+fn write_via_writer_tx(writer_tx: &mpsc::SyncSender<WriterCommand>, data: Vec<u8>) -> Result<()> {
     if data.is_empty() {
         return Ok(());
     }
 
     let (ack_tx, ack_rx) = mpsc::channel();
     writer_tx
-        .send(WriterCommand::Write { data, ack: ack_tx })
-        .map_err(|_| anyhow!("Terminal writer is closed"))?;
+        .try_send(WriterCommand::Write { data, ack: ack_tx })
+        .map_err(|error| match error {
+            mpsc::TrySendError::Full(_) => anyhow!("Terminal input queue is full"),
+            mpsc::TrySendError::Disconnected(_) => anyhow!("Terminal writer is closed"),
+        })?;
 
     match ack_rx.recv_timeout(TERMINAL_WRITE_ACK_TIMEOUT) {
         Ok(Ok(())) => Ok(()),
@@ -1944,6 +1933,27 @@ fn build_session_status_info(
 
 fn should_apply_pty_status_fallback(hook_active: bool, current: SessionStatus) -> bool {
     !hook_active && !matches!(current, SessionStatus::Exited | SessionStatus::Error)
+}
+
+fn update_pty_status(
+    status: &Mutex<SessionStatus>,
+    hook_updated_at: &Mutex<Option<Instant>>,
+    hook_active: bool,
+    inferred: SessionStatus,
+    now: Instant,
+) -> (SessionStatus, bool) {
+    // Match apply_hook_status's lock order so a concurrent hook cannot be
+    // overwritten after this reader checked an obsolete freshness timestamp.
+    let mut current = status.lock().unwrap_or_else(|e| e.into_inner());
+    let recent_remote_hook = hook_updated_at
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_some_and(|at| now.saturating_duration_since(at) < Duration::from_secs(30));
+    let hook_active = hook_active || recent_remote_hook;
+    if should_apply_pty_status_fallback(hook_active, *current) {
+        *current = inferred;
+    }
+    (*current, hook_active)
 }
 
 fn append_ssh_session_options(args: &mut Vec<String>) {
@@ -2522,6 +2532,7 @@ impl TerminalService {
             extra_env,
             ssh,
             wsl,
+            None,
         )
         .map(|outcome| outcome.session_id)
     }
@@ -2550,6 +2561,7 @@ impl TerminalService {
         extra_env: Option<&HashMap<String, String>>,
         ssh: Option<&SshConnectionInfo>,
         wsl: Option<&WslLaunchInfo>,
+        publisher: Option<&crate::services::terminal_backend::SessionPublisher>,
     ) -> Result<CreateSessionOutcome> {
         // 归一化前端遗留哨兵："new"/空串都视为「新会话」（避免 `--resume new`，
         // 并让 Claude 发号分支正确生效）
@@ -3745,6 +3757,7 @@ impl TerminalService {
 
         // 状态追踪
         let status = Arc::new(Mutex::new(SessionStatus::Active));
+        let hook_updated_at = Arc::new(Mutex::new(None));
         let exit_code = Arc::new(Mutex::new(None));
         let last_output_at = Arc::new(Mutex::new(Instant::now()));
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -3763,6 +3776,8 @@ impl TerminalService {
         } else {
             OutputFlowGate::new()
         });
+        output_flow.attach_session_id(&session_id);
+        let reader_watch = Arc::new(ReaderIoWatch::new());
 
         // sanitize 可开关兜底（默认关闭 — dwFlags=0 应该解决了根本问题）
         #[cfg(windows)]
@@ -3781,7 +3796,7 @@ impl TerminalService {
         let wait_wsl_pi_state_cleanup = managed_wsl_pi_state_cleanup.clone();
 
         // 保存会话
-        {
+        let mut register = || -> Result<()> {
             // Cancellation and registration use one lock order so a timeout racing this block
             // either consumes the marker here or observes and kills the inserted session.
             let mut cancelled_launches = self
@@ -3807,9 +3822,10 @@ impl TerminalService {
                     project_path: project_path.to_string(),
                     runtime_kind: runtime_kind.to_string(),
                     cli_tool,
-                    process,
-                    writer_tx,
+                    process: Arc::clone(&process),
+                    writer_tx: writer_tx.clone(),
                     status: status.clone(),
+                    hook_updated_at: hook_updated_at.clone(),
                     exit_code: exit_code.clone(),
                     last_output_at: last_output_at.clone(),
                     cancelled: cancelled.clone(),
@@ -3817,12 +3833,36 @@ impl TerminalService {
                     replay_buffer: replay_buffer.clone(),
                     paste_ready: paste_ready.clone(),
                     output_flow: output_flow.clone(),
+                    reader_watch: reader_watch.clone(),
                     managed_pi_state_cleanup: managed_pi_state_cleanup.clone(),
                     managed_wsl_pi_state_cleanup: managed_wsl_pi_state_cleanup.clone(),
                 },
             );
             pending_pi_managed_state_cleanup.disarm();
             pending_wsl_pi_state_cleanup.disarm();
+            Ok(())
+        };
+        let registered = match publisher {
+            Some(publish) => publish(&session_id, &mut register),
+            None => register(),
+        };
+        if let Err(error) = registered {
+            if let Ok(mut sessions) = self.sessions.lock() {
+                sessions.remove(&session_id);
+            }
+            if let Some(cleanup) = managed_pi_state_cleanup.as_ref() {
+                cleanup.cleanup();
+            }
+            if let Some(cleanup) = managed_wsl_pi_state_cleanup.as_ref() {
+                cleanup.cleanup();
+            }
+            // No reader/wait owner has started yet. Roll back this unpublished child only.
+            let _ = process.kill();
+            let discard = thread::spawn(move || std::io::copy(&mut reader, &mut std::io::sink()));
+            process.close_output();
+            let _ = discard.join();
+            let _ = process.wait();
+            return Err(error);
         }
         log_launch_stage(
             launch_id,
@@ -3835,7 +3875,7 @@ impl TerminalService {
         );
 
         // 启动输出批量合并线程（减少 IPC 事件频率，防止 WKWebView 主线程死锁）
-        // 策略：累积数据，满足任一条件时刷出：≥16KB 或 ≥16ms 超时。
+        // 策略：≥16KB 或固定截止时间刷出；普通输出 16ms，键盘交互期间 2ms。
         // 每个 chunk 附带 ReplayBuffer 记账的 end seq（同一字节流同一计数，M3b-2）；
         // 合批时取批内最后一个 chunk 的 end seq，emit 是整数个 read-chunk 拼接，
         // 前端见到的任何 endSeq 必落 chunk 边界。
@@ -3850,9 +3890,8 @@ impl TerminalService {
         let batch_emitter = emitter.clone();
         let batch_sid = session_id.clone();
         let batch_flow = output_flow.clone();
-        thread::spawn(move || {
+        let batch_thread = thread::spawn(move || {
             const BATCH_SIZE_THRESHOLD: usize = 16384; // 16KB
-            const BATCH_TIMEOUT: Duration = Duration::from_millis(16); // ~60fps
 
             // 只有**真正发出去**的批才计 in-flight（B-5）。emit 返回 Err 时字节根本
             // 没到前端（例如 Windows webview 恢复期 emits 被挂起），照样记账就是
@@ -3865,9 +3904,11 @@ impl TerminalService {
 
             let mut batch = String::with_capacity(BATCH_SIZE_THRESHOLD);
             let mut batch_end_seq: Option<u64> = None;
+            let mut batch_clock = output_batch_clock::OutputBatchClock::default();
             loop {
-                match batch_rx.recv_timeout(BATCH_TIMEOUT) {
+                match batch_rx.recv_timeout(batch_clock.wait(Instant::now())) {
                     Ok((data, end_seq)) => {
+                        batch_clock.note_data(Instant::now());
                         batch.push_str(&data);
                         batch_end_seq = end_seq;
                         // 排空通道中已有的数据
@@ -3883,6 +3924,7 @@ impl TerminalService {
                         // src/main/ipc/pty.ts:2681-2682 同款判据）。
                         if batch.len() >= BATCH_SIZE_THRESHOLD
                             || batch_flow.is_interactive_echo(batch.len())
+                            || batch_clock.due(Instant::now())
                         {
                             let end_seq = batch_end_seq.take();
                             let emitted =
@@ -3902,6 +3944,7 @@ impl TerminalService {
                                 .unwrap_or(false);
                             note_emitted(&batch_flow, emitted, end_seq);
                             batch = String::with_capacity(BATCH_SIZE_THRESHOLD);
+                            batch_clock.clear();
                         }
                     }
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
@@ -3926,6 +3969,7 @@ impl TerminalService {
                             note_emitted(&batch_flow, emitted, end_seq);
                             batch = String::with_capacity(BATCH_SIZE_THRESHOLD);
                         }
+                        batch_clock.clear();
                     }
                     Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                         // 读取线程退出，刷出残留数据
@@ -3995,6 +4039,7 @@ impl TerminalService {
         let sid = session_id.clone();
         let read_emitter = emitter.clone();
         let read_status = status.clone();
+        let read_hook_updated_at = hook_updated_at.clone();
         let read_last_output = last_output_at.clone();
         let read_cancelled = cancelled.clone();
         let read_notifier = notifier.clone();
@@ -4003,6 +4048,7 @@ impl TerminalService {
         let read_replay_buffer = replay_buffer.clone();
         let read_paste_ready = paste_ready.clone();
         let read_output_flow = output_flow.clone();
+        let read_watch = reader_watch.clone();
         // 每会话只警告一次：队列满往往是连续的，逐 chunk 打日志会把日志刷爆。
         let read_desync_warned = Arc::new(AtomicBool::new(false));
         let reader_pid = session_pid;
@@ -4015,7 +4061,8 @@ impl TerminalService {
             .and_then(|g| g.as_ref().cloned());
         // F5：OSC 9;4 徽章旁路存储 clone 进 read 线程（Progress 信号落盘点）
         let read_osc_store = Arc::clone(&self.osc_progress_store);
-        thread::spawn(move || {
+        let reader_thread = thread::spawn(move || {
+            let _reader_scope = read_watch.reader_scope();
             let mut buf = [0u8; 4096];
             let prev_status = Mutex::new(SessionStatus::Active);
             // 连续确认计数（issue #61）：Codex 强判据需连续 2 个 chunk 复现，
@@ -4036,6 +4083,7 @@ impl TerminalService {
                 if read_cancelled.load(Ordering::Relaxed) {
                     break;
                 }
+                read_watch.processing("flow-control");
                 // 生产者暂停（B-1）：水位超标时停在这里不调 read()，PTY 内核缓冲
                 // 填满后刷屏的子进程阻塞在自己的 write() 上——被自己的输出限速。
                 // 内部保证不会永久卡：ACK 排空、失效超时、cancelled 三条都能放行。
@@ -4056,7 +4104,10 @@ impl TerminalService {
                 if read_cancelled.load(Ordering::Relaxed) {
                     break;
                 }
-                match reader.read(&mut buf) {
+                read_watch.mark_attempt();
+                let read_result = reader.read(&mut buf);
+                read_watch.mark_returned(matches!(&read_result, Ok(n) if *n > 0));
+                match read_result {
                     Ok(0) => {
                         warn!(
                             "[pty-read] session={} read returned Ok(0), breaking loop \
@@ -4124,11 +4175,13 @@ impl TerminalService {
                             break;
                         }
 
+                        read_watch.processing("osc-capture");
                         // Codex OSC 标题捕获（done 后仅一次原子读，开销可忽略）
                         if let Some(capture) = osc_capture.as_mut() {
                             capture.scan(&data);
                         }
 
+                        read_watch.processing("terminal-modes");
                         csi_mode_detector.process(data.as_bytes(), |signal| match signal {
                             csi_mode_detect::CsiModeSignal::PasteReady(ready) => {
                                 read_paste_ready.store(ready, Ordering::Release);
@@ -4151,6 +4204,7 @@ impl TerminalService {
                             }
                         });
 
+                        read_watch.processing("status-inference");
                         // 更新状态
                         {
                             let mut ts = read_last_output.lock().unwrap_or_else(|e| {
@@ -4178,18 +4232,13 @@ impl TerminalService {
                             .and_then(|sm| sm.seconds_since_last_hook(&sid))
                             .map(|secs| secs < 30)
                             .unwrap_or(false);
-                        let new_status = {
-                            let mut s = read_status.lock().unwrap_or_else(|e| {
-                                warn!("read_status lock poisoned, using fallback value");
-                                e.into_inner()
-                            });
-                            if should_apply_pty_status_fallback(hook_active, *s) {
-                                // Hook 静默后重新允许 PTY 推断接管。否则 Codex 这类只暴露
-                                // 部分 hook 事件的 CLI 会在一次 waiting-input 后永久卡住状态。
-                                *s = inferred;
-                            }
-                            *s
-                        };
+                        let (new_status, hook_active) = update_pty_status(
+                            &read_status,
+                            &read_hook_updated_at,
+                            hook_active,
+                            inferred,
+                            Instant::now(),
+                        );
 
                         // 检测状态变更并触发通知
                         // 阶段 2.8：hook 主导时不再由 PTY 触发 WaitingInput 通知（hook 自己上报更准）。
@@ -4214,11 +4263,13 @@ impl TerminalService {
                             *prev = new_status;
                         }
 
+                        read_watch.processing("normalize-output");
                         let normalized_prompt = normalize_prompt_text(&data);
 
                         // 追加到原始 VT 回放缓冲区，并取 push 后的 pushed_seq 作为
                         // 本 chunk 的 end seq——seq 必须与 ReplayBuffer 记账同源
                         // （同一字节流同一计数），锁失败时不产 seq（None）。
+                        read_watch.processing("replay-buffer");
                         let chunk_end_seq = match read_replay_buffer.lock() {
                             Ok(mut replay) => {
                                 replay.push(&data);
@@ -4227,6 +4278,7 @@ impl TerminalService {
                             Err(_) => None,
                         };
 
+                        read_watch.processing("text-buffer");
                         // 追加到纯文本输出缓冲区
                         if let Ok(mut buf) = read_output_buffer.lock() {
                             buf.push(&data);
@@ -4238,6 +4290,7 @@ impl TerminalService {
                         // （循环顶部才检查），kill 会话会挂起。队列满时**整段丢弃
                         // 并发 desync**——绝不掐断 VT 序列中段（同 ws_emitter 契约）。
                         // 字节已进 ReplayBuffer，前端走 snapshot 重放补齐。
+                        read_watch.processing("batch-send");
                         match batch_tx.try_send((data.clone(), chunk_end_seq)) {
                             Ok(()) => {}
                             Err(std::sync::mpsc::TrySendError::Full(_)) => {
@@ -4253,7 +4306,10 @@ impl TerminalService {
                                     serde_json::json!({ "sessionId": sid }),
                                 );
                             }
-                            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => break,
+                            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                                warn!(session_id = %sid, "[pty-read] batcher disconnected; reader stopping");
+                                break;
+                            }
                         }
 
                         if let Some(runtime) = read_ssh_auth_runtime.as_ref() {
@@ -4291,6 +4347,7 @@ impl TerminalService {
                             }
                         }
 
+                        read_watch.processing("status-emit");
                         // 发送状态事件（节流：仅在 status 变化或距上次发射 ≥2s 时发射）
                         let now_instant = Instant::now();
                         let status_changed = new_status != last_emitted_status;
@@ -4381,16 +4438,20 @@ impl TerminalService {
         // F5：徽章旁路存储 clone 进 wait 线程（退出时清条目 + 最终状态注入）
         let wait_osc_store = Arc::clone(&self.osc_progress_store);
         thread::spawn(move || {
-            let process_exit_code = match process_for_wait.wait() {
-                Ok(status) => {
-                    if status.success() {
-                        0
-                    } else {
-                        1
-                    }
-                }
-                Err(_) => -1,
-            };
+            let process_exit_code = process_for_wait
+                .wait()
+                .map(|status| status.code().unwrap_or(-1))
+                .unwrap_or(-1);
+            // Closing the ConPTY master signals EOF while the reader is still draining.
+            // The final exit event follows every queued output event.
+            wait_output_flow.release();
+            process_for_wait.close_output();
+            if reader_thread.join().is_err() {
+                warn!(session_id = %sid, "PTY reader failed before output drained");
+            }
+            if batch_thread.join().is_err() {
+                warn!(session_id = %sid, "PTY output batcher failed before exit");
+            }
             if let Ok(mut stored_exit_code) = wait_exit_code.lock() {
                 *stored_exit_code = Some(process_exit_code);
             }
@@ -4509,7 +4570,6 @@ impl TerminalService {
 
             // 延迟清理会话：等待读取线程完成后移除 session，
             // 防止僵尸会话永久驻留在 HashMap 中
-            thread::sleep(std::time::Duration::from_millis(500));
             // 自然退出也要清理 per-session 输入锁，否则长期运行下每个已退出
             // 会话都会残留一个 Arc<Mutex<()>>（此前仅 kill() 清理）。
             if let Ok(mut input_mutexes) = input_mutexes_for_wait.lock() {
@@ -4870,28 +4930,39 @@ impl TerminalService {
             );
             return Ok(());
         }
-        self.write(session_id, data)
+        self.write_serialized(session_id, data, false)
     }
 
     fn tty_cooked_echo(&self, session_id: &str) -> Option<bool> {
-        let sessions = self.sessions.lock().ok()?;
-        sessions.get(session_id)?.process.cooked_echo_enabled()
+        let process = self.sessions.lock().ok()?.get(session_id)?.process.clone();
+        process.cooked_echo_enabled()
     }
 
     pub fn write(&self, session_id: &str, data: &str) -> Result<()> {
-        // 记一次按键时刻：合批线程据此把紧随其后的小批输出判为回显、绕过 16ms
-        // 窗口立即刷出。回显延迟是用户直接可感知的（Stage 5 交互快路）。
+        self.write_serialized(session_id, data, true)
+    }
+
+    fn note_user_input(&self, session_id: &str, data: &str) {
+        if data.is_empty() || matches!(data, "\x1b[I" | "\x1b[O") {
+            return;
+        }
         if let Ok(sessions) = self.sessions.lock() {
             if let Some(session) = sessions.get(session_id) {
                 session.output_flow.note_input();
             }
         }
+    }
+
+    fn write_serialized(&self, session_id: &str, data: &str, user_input: bool) -> Result<()> {
         let mutex = self
             .input_mutex_for_session(session_id)
             .map_err(|error| anyhow!(error.to_string()))?;
         let _guard = mutex
             .lock()
             .map_err(|_| anyhow!("terminal input lock poisoned"))?;
+        if user_input {
+            self.note_user_input(session_id, data);
+        }
         self.write_unlocked(session_id, data)
     }
 
@@ -4915,13 +4986,9 @@ impl TerminalService {
                 .ok_or_else(|| anyhow!("Session not found: {}", session_id))?
         };
 
-        for (i, chunk) in chunks.iter().enumerate() {
+        for chunk in chunks {
+            // The writer acknowledgement supplies backpressure; no fixed per-chunk sleep.
             write_via_writer_tx(&writer_tx, chunk.to_vec())?;
-
-            // 多 chunk 时，非最后一个 chunk 后添加延迟，让 ConPTY 消化输入
-            if chunks.len() > 1 && i < chunks.len() - 1 {
-                std::thread::sleep(TERMINAL_WRITE_INTER_CHUNK_DELAY);
-            }
         }
         Ok(())
     }
@@ -4978,10 +5045,12 @@ impl TerminalService {
             .map_err(|_| AppError::from("terminal input lock poisoned"))?;
 
         // fix(C2) review: 持有 per-session 锁覆盖“写文本 + sleep + 写 Enter”的完整序列。
+        self.note_user_input(session_id, submitted_text);
         self.write_unlocked(session_id, submitted_text)
             .map_err(AppError::from)?;
         let delay_ms = submit_delay_ms(text.len(), paste_ready);
         std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+        self.note_user_input(session_id, "\r");
         self.write_unlocked(session_id, "\r")
             .map_err(AppError::from)?;
         Ok(())
@@ -4989,15 +5058,20 @@ impl TerminalService {
 
     /// 调整终端大小
     pub fn resize(&self, session_id: &str, cols: u16, rows: u16) -> Result<()> {
-        let sessions = self
-            .sessions
-            .lock()
-            .map_err(|_| anyhow!("sessions lock poisoned"))?;
-        let session = sessions
-            .get(session_id)
-            .ok_or_else(|| anyhow!("Session not found: {}", session_id))?;
-
-        session.process.resize(cols, rows)?;
+        let process = {
+            let sessions = self
+                .sessions
+                .lock()
+                .map_err(|_| anyhow!("sessions lock poisoned"))?;
+            Arc::clone(
+                &sessions
+                    .get(session_id)
+                    .ok_or_else(|| anyhow!("Session not found: {}", session_id))?
+                    .process,
+            )
+        };
+        // A ConPTY resize/recovery may wait. It must not hold every session's lock.
+        process.resize(cols, rows)?;
         Ok(())
     }
 
@@ -5099,6 +5173,19 @@ impl TerminalService {
                 session_id
             )))
         }
+    }
+
+    /// Enumerate caches without cloning every terminal's history into one allocation.
+    pub fn session_output_ids(&self) -> Vec<String> {
+        let mut ids: std::collections::HashSet<String> = self
+            .sessions
+            .lock()
+            .map(|sessions| sessions.keys().cloned().collect())
+            .unwrap_or_default();
+        if let Ok(dead) = self.dead_buffers.lock() {
+            ids.extend(dead.keys().cloned());
+        }
+        ids.into_iter().collect()
     }
 
     /// 获取所有活跃会话的输出缓冲区内容（用于退出时持久化）
@@ -5263,6 +5350,38 @@ impl TerminalService {
             flow.note_acked(processed_end_seq);
         }
         Ok(())
+    }
+
+    /// 只读投递水位快照。未知会话返回 `None`——诊断不能因为已经拆掉的 pane 报错。
+    pub fn get_terminal_flow_diagnostics(
+        &self,
+        session_id: &str,
+    ) -> AppResult<Option<OutputFlowDiagnostics>> {
+        let snapshot = {
+            let sessions = self
+                .sessions
+                .lock()
+                .map_err(|_| AppError::from("sessions lock poisoned"))?;
+            sessions.get(session_id).map(|session| {
+                (
+                    Arc::clone(&session.output_flow),
+                    Arc::clone(&session.reader_watch),
+                )
+            })
+        };
+        Ok(snapshot.map(|(flow, watch)| {
+            let mut diagnostics = flow.diagnostics(session_id);
+            diagnostics.last_read_ok_ms_ago = watch.last_ok_ms_ago();
+            diagnostics.reader_blocked_ms = watch.blocked_ms();
+            diagnostics.conpty_kick_count = watch.recovery_count();
+            if let Some((alive, panicked, phase, age)) = watch.lifecycle() {
+                diagnostics.reader_alive = Some(alive);
+                diagnostics.reader_panicked = panicked;
+                diagnostics.reader_phase = Some(phase.to_string());
+                diagnostics.reader_phase_age_ms = age;
+            }
+            diagnostics
+        }))
     }
 
     /// scrollback 设置变更后重算所有活跃会话的 replay 上限。
@@ -5574,7 +5693,7 @@ impl TerminalService {
     }
 
     fn healthy_orchestrator_info(&self) -> Option<OrchestratorInfo> {
-        let manifest_info = orchestrator_manifest::read_endpoint(self.app_paths.data_dir())
+        let manifest_info = orchestrator_manifest::read_active_endpoint(self.app_paths.data_dir())
             .map(|(port, token)| OrchestratorInfo { port, token });
         let cached_info = self.orchestrator_info.lock().ok().and_then(|g| g.clone());
         let mut candidates = Vec::with_capacity(2);
@@ -5591,7 +5710,7 @@ impl TerminalService {
         }
 
         for (source, info) in candidates {
-            if local_orchestrator_endpoint_reachable(info.port) {
+            if local_orchestrator_endpoint_reachable(info.port, self.app_paths.data_dir()) {
                 if let Ok(mut guard) = self.orchestrator_info.lock() {
                     *guard = Some(info.clone());
                 }
@@ -5643,6 +5762,10 @@ impl TerminalService {
             // 写入 status Mutex（沿用 PTY read 线程的 lock 模式）
             if let Ok(mut s) = session.status.lock() {
                 *s = new_status;
+                *session
+                    .hook_updated_at
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
             }
             session.process.pid()
         };
@@ -7537,11 +7660,12 @@ mod tests {
     }
 
     #[test]
-    fn healthy_orchestrator_info_drops_unreachable_port() {
+    fn healthy_orchestrator_info_drops_an_endpoint_without_a_health_responder() {
         let (service, _temp_dir) = terminal_service_for_test();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind test port");
         let port = listener.local_addr().expect("listener addr").port();
-        drop(listener);
+        // Keep ownership until the probe finishes. Closing an ephemeral port lets
+        // a parallel test immediately bind a healthy responder to the same port.
 
         service.set_orchestrator_info(port, "token".to_string());
 
@@ -7551,6 +7675,7 @@ mod tests {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .is_none());
+        drop(listener);
     }
 
     /// 起一个只回 `/api/health` → `{"status":"ok"}` 的极简 HTTP 监听器，
@@ -7737,6 +7862,7 @@ mod tests {
                     process: Arc::new(FakePtyProcess { echo: pty_echo }),
                     writer_tx,
                     status: Arc::new(Mutex::new(SessionStatus::Idle)),
+                    hook_updated_at: Arc::new(Mutex::new(None)),
                     exit_code: Arc::new(Mutex::new(None)),
                     last_output_at: Arc::new(Mutex::new(Instant::now())),
                     cancelled: Arc::new(AtomicBool::new(false)),
@@ -7744,6 +7870,7 @@ mod tests {
                     replay_buffer: Arc::new(Mutex::new(ReplayBuffer::new(1024))),
                     paste_ready: Arc::new(AtomicBool::new(false)),
                     output_flow: Arc::new(OutputFlowGate::new()),
+                    reader_watch: Arc::new(ReaderIoWatch::new()),
                     managed_pi_state_cleanup,
                     managed_wsl_pi_state_cleanup: None,
                 },
@@ -7865,6 +7992,38 @@ mod tests {
             false,
             SessionStatus::Error
         ));
+    }
+
+    #[test]
+    fn daemon_hook_status_survives_output_until_the_authority_window_expires() {
+        let (service, _temp_dir) = terminal_service_for_test();
+        install_recording_session(&service, "remote-hook", Arc::new(Mutex::new(Vec::new())));
+        assert!(service.state_machine.lock().unwrap().is_none());
+        service.apply_hook_status("remote-hook", SessionStatus::Thinking);
+        let sessions = service.sessions.lock().unwrap();
+        let session = sessions.get("remote-hook").unwrap();
+        let received_at = session.hook_updated_at.lock().unwrap().unwrap();
+        assert_eq!(
+            update_pty_status(
+                &session.status,
+                &session.hook_updated_at,
+                false,
+                SessionStatus::Active,
+                received_at + Duration::from_secs(29)
+            ),
+            (SessionStatus::Thinking, true),
+        );
+        // A missing follow-up hook must still permit the existing stale fallback.
+        assert_eq!(
+            update_pty_status(
+                &session.status,
+                &session.hook_updated_at,
+                false,
+                SessionStatus::Active,
+                received_at + Duration::from_secs(31)
+            ),
+            (SessionStatus::Active, false),
+        );
     }
 
     #[test]

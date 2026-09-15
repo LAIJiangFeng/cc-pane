@@ -557,13 +557,8 @@ pub const DEFAULT_DAEMON_ORPHAN_TTL_MINUTES: u32 = 24 * 60;
 
 impl TerminalSettings {
     pub fn merge_missing_defaults(&mut self) {
-        if matches!(
-            self.scrollback,
-            crate::constants::terminal::LEGACY_DEFAULT_SCROLLBACK
-                | crate::constants::terminal::PREVIOUS_DEFAULT_SCROLLBACK
-        ) {
-            self.scrollback = crate::constants::terminal::DEFAULT_SCROLLBACK;
-        }
+        // An explicit historical default is still a user choice, not a migration marker.
+        self.scrollback = self.scrollback.clamp(200, 100_000);
         if self.font_size < MIN_TERMINAL_FONT_SIZE || self.font_size > MAX_TERMINAL_FONT_SIZE {
             self.font_size = DEFAULT_TERMINAL_FONT_SIZE;
         }
@@ -1829,7 +1824,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_merge_missing_defaults_migrates_legacy_scrollback() {
+    fn terminal_merge_missing_defaults_preserves_legacy_scrollback() {
         let mut settings = TerminalSettings {
             scrollback: crate::constants::terminal::LEGACY_DEFAULT_SCROLLBACK,
             ..Default::default()
@@ -1839,7 +1834,7 @@ mod tests {
 
         assert_eq!(
             settings.scrollback,
-            crate::constants::terminal::DEFAULT_SCROLLBACK
+            crate::constants::terminal::LEGACY_DEFAULT_SCROLLBACK
         );
     }
 
@@ -1856,7 +1851,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_merge_missing_defaults_migrates_previous_default_scrollback() {
+    fn terminal_merge_missing_defaults_preserves_previous_default_scrollback() {
         let mut settings = TerminalSettings {
             scrollback: crate::constants::terminal::PREVIOUS_DEFAULT_SCROLLBACK,
             ..Default::default()
@@ -1864,7 +1859,10 @@ mod tests {
 
         settings.merge_missing_defaults();
 
-        assert_eq!(settings.scrollback, 5_000);
+        assert_eq!(
+            settings.scrollback,
+            crate::constants::terminal::PREVIOUS_DEFAULT_SCROLLBACK
+        );
     }
 
     /// 旧 config.toml 里没有这两个键，反序列化必须补默认而不是整段失败。

@@ -3,6 +3,7 @@ pub mod boundary_events;
 pub mod claude_session_service;
 pub mod codex_session_service;
 mod ctl_sidecar;
+pub mod terminal_output_cursor;
 // ACP 聊天会话与 PTY 终端共用同一条 CC_PANES_CTL 注入链（src-tauri 侧也要用）。
 pub use ctl_sidecar::{session_ctl_env_value, SESSION_CTL_ENV_KEY};
 mod cursor_bridge_hub;
@@ -56,8 +57,10 @@ mod spec_service;
 mod ssh_connection_service;
 mod ssh_credential_service;
 mod ssh_file_service;
+mod ssh_handshake;
 mod ssh_machine_service;
 mod ssh_proxy_bridge;
+mod ssh_relay;
 mod ssh_terminal_service;
 mod system_stats_service;
 mod task_binding_service;
@@ -168,7 +171,7 @@ pub use task_queue_service::{
 };
 pub use terminal_backend::{
     set_claim_lost_hook, AutomaticWriteAuthority, CreateSessionOutcome, DaemonTerminalBackend,
-    InProcessTerminalBackend, TerminalAdoptionSnapshot, TerminalBackend,
+    InProcessTerminalBackend, SessionPublisher, TerminalAdoptionSnapshot, TerminalBackend,
 };
 pub use terminal_path_link_service::{
     resolve_terminal_path_link, resolve_terminal_path_link_for_desktop, ResolvedTerminalPathLink,

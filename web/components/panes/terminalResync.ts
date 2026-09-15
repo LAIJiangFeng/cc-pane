@@ -6,6 +6,7 @@ import { restoreReplayBufferMode } from "./terminalReplayBufferMode";
 import { withTerminalReplayPresentation, type ReplayPresentationTerminal } from "./terminalReplayPresentation";
 import { checkpointRecoveredTerminal } from "./terminalRecoveryCheckpoint";
 import { noteRecoveryDuration } from "@/services/performanceRecoveryMetrics";
+import { restoreTerminalReplayGeometry } from "./terminalReplayGeometry";
 
 /**
  * 从后端恢复快照（checkpoint+delta）整体重同步终端画面。
@@ -135,6 +136,7 @@ async function restoreSnapshot({
   noteTerminalPerformanceResync(sessionId, snapshot.delta.length + (snapshot.checkpoint?.snapshotAnsi.length ?? 0));
   term.reset();
   if (snapshot.checkpoint) {
+    restoreTerminalReplayGeometry(term, snapshot.checkpoint);
     await writeTerminalReplay(snapshot.checkpoint.snapshotAnsi, writeCheckpointData, { canWrite });
   } else {
     await restoreReplayBufferMode(snapshot, term, writeData, canWrite);

@@ -1,4 +1,6 @@
 {
+  "rendererRecoveryFailed": "终端画面恢复失败。可以重试恢复画面，后台任务不会重新执行。",
+  "retryRendererRecovery": "重试恢复画面",
   "ready": "准备就绪",
   "sshLocalDropUnsupported": "本地文件无法拖入 SSH 终端",
   "sshLocalDropUnsupportedHint": "拖入的 {{pathCount}} 个路径在本机上，远端主机无法访问。请先通过远程文件上传。",

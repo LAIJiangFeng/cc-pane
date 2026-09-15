@@ -15,6 +15,7 @@ export interface UseTerminalWriteWatchdogParams {
   resyncInProgressRef: RefValue<boolean>;
   overflowResyncRef: RefValue<(() => Promise<boolean>) | null>;
   flushHiddenWrites: (reason: string) => Promise<unknown>;
+  onRendererFailure: (error: Error) => void;
   debugLog: (event: string, payload?: Record<string, unknown>) => void;
   /** D 类检测锚点：本视图当前绑定会话与最近收到输出的时间戳。 */
   currentSessionIdRef?: RefValue<string | null>;
@@ -45,7 +46,7 @@ const RECOVERY_COOLDOWN_MS = 60_000;
  *     born-visible 时此后没有 hidden→visible 边沿，flush 永不触发；
  * B. 流控卡死：xterm 写回调不再回来，pendingCallbacks 顶到高水位，pump 永久 blocked；
  * C. resync 挂死：闸门合上后恢复流程未 settle，flush 永远返回 "resync" 等待。
- * 每类都复用既有恢复原语（flush / flowControl.reset / 重跑 resync），watchdog 只负责发现。
+ * 每类都复用既有恢复原语（flush / 关闭旧 writer 并重建视图 / 重跑 resync）。
  */
 export function useTerminalWriteWatchdog({
   isRenderVisible,
@@ -55,6 +56,7 @@ export function useTerminalWriteWatchdog({
   resyncInProgressRef,
   overflowResyncRef,
   flushHiddenWrites,
+  onRendererFailure,
   debugLog,
   currentSessionIdRef,
   lastOutputReceivedAtRef,
@@ -96,7 +98,8 @@ export function useTerminalWriteWatchdog({
         return;
       }
 
-      // B：写队列老块等回调超时 = 回调链死，重置流控水位让 pump 复活。
+      // B：常规 3s 检测由 writer 自身负责；这里兜底销毁并请求视图恢复。
+      // 不复活旧队列，避免迟到的 xterm 回调重新写入尾部数据。
       const flow = writeFlowControlRef.current;
       const stats = flow?.getStats();
       if (stats && stats.queuedWrites > 0 && stats.oldestWaitMs >= STUCK_OLDEST_WAIT_MS) {
@@ -105,7 +108,9 @@ export function useTerminalWriteWatchdog({
             queuedWrites: stats.queuedWrites,
             oldestWaitMs: stats.oldestWaitMs,
           });
-          flow?.reset();
+          flow?.dispose("terminal write watchdog: parsing stalled");
+          onRendererFailure(new Error("Terminal write queue stopped draining"));
+          return;
         }
       }
 
@@ -163,6 +168,7 @@ export function useTerminalWriteWatchdog({
     resyncInProgressRef,
     overflowResyncRef,
     flushHiddenWrites,
+    onRendererFailure,
     debugLog,
     currentSessionIdRef,
     lastOutputReceivedAtRef,

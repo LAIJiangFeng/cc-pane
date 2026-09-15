@@ -434,6 +434,7 @@ fn extract_last_title_uuid_prefix(data: &str) -> Option<String> {
             i = start + 2;
             continue;
         };
+        let body_start = data.len() - body.len();
         // 终止符：BEL 或 ST（ESC \）。这里把任意 ESC 当作标题结束（不校验后随 \\）：
         // 标题体内出现非 ST 的 ESC 属于异常序列，提前截断最多导致本条 uuid 形状
         // 校验不过而被跳过，后续标题会重试，不会误绑。未终止（chunk 截断）则留给 tail 拼接
@@ -446,7 +447,10 @@ fn extract_last_title_uuid_prefix(data: &str) -> Option<String> {
             if let Some(uuid) = extract_uuid_like(&body[..end]) {
                 result = Some(uuid);
             }
-            i = start + 2 + end;
+            // `end` is relative to the body, after both ESC] and 0;/2;.
+            // Omitting the latter two bytes can land inside a final UTF-8
+            // ellipsis/CJK character and panic the entire PTY reader thread.
+            i = body_start + end;
         } else {
             // 序列尚未完整到达
             break;
@@ -639,6 +643,32 @@ fn extract_full_id_from_filename(name: &str, prefix: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unicode_title_suffix_does_not_panic_the_pty_reader() {
+        let prefix = "01a09b49-b073-7e81-b372-8db9a";
+        for code in ["0", "2"] {
+            for suffix in ["…", "处理中", "🦀"] {
+                for terminator in ["\x07", "\x1b\\"] {
+                    let title = format!("\x1b]{code};Working {prefix}{suffix}{terminator}");
+                    assert_eq!(
+                        extract_last_title_uuid_prefix(&title),
+                        Some(prefix.to_string())
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn unicode_title_before_another_title_keeps_the_latest_identity() {
+        let prefix = "01a09b49-b073-7e81-b372-8db9a";
+        let data = format!("\x1b]2;处理中\x07\x1b]0;{prefix}…\x07text");
+        assert_eq!(
+            extract_last_title_uuid_prefix(&data),
+            Some(prefix.to_string())
+        );
+    }
     use crate::events::EventEmitter;
     use serde_json::Value;
     use std::sync::Mutex;

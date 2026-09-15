@@ -10,6 +10,8 @@ use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 
 #[cfg(windows)]
 mod job;
+mod read_watch;
+pub use read_watch::ReaderIoWatch;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -80,12 +82,20 @@ pub trait PtyProcess: Send + Sync {
     fn cooked_echo_enabled(&self) -> Option<bool> {
         None
     }
+
+    /// 内核/ConPTY 当前登记的 cols×rows。Kick-resize 用；拿不到就不要瞎踢。
+    fn pty_size(&self) -> Option<(u16, u16)> {
+        None
+    }
+
+    /// Signal end of output after the child exits, while its reader is still draining.
+    fn close_output(&self) {}
 }
 
 /// portable-pty 包装的 PTY 进程（全平台通用）
 struct PortablePtyProcess {
     child: Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
-    master: Mutex<Box<dyn portable_pty::MasterPty + Send>>,
+    master: Mutex<Option<Box<dyn portable_pty::MasterPty + Send>>>,
     /// 使用 AtomicBool 消除 wait() 和 kill() 之间的锁竞态
     exited: AtomicBool,
     /// 创建时存储 PID，kill() 通过 OS API 按 PID 终止，绕过 child 锁死锁
@@ -95,6 +105,8 @@ struct PortablePtyProcess {
     /// 同时承载会话级资源策略（优先级 / CPU 权重），见 `set_resource_policy`。
     #[cfg(windows)]
     job: Option<job::ProcessJob>,
+    #[cfg(windows)]
+    process_handle: Option<job::ProcessHandle>,
 }
 
 impl PtyProcess for PortablePtyProcess {
@@ -109,7 +121,7 @@ impl PtyProcess for PortablePtyProcess {
         use std::os::fd::RawFd;
 
         let master = self.master.lock().ok()?;
-        let fd: RawFd = master.as_raw_fd()?;
+        let fd: RawFd = master.as_ref()?.as_raw_fd()?;
         let mut termios = std::mem::MaybeUninit::<libc::termios>::uninit();
         // SAFETY: fd 由 master 持有、在本次调用期间有效；tcgetattr 只读不改。
         if unsafe { libc::tcgetattr(fd, termios.as_mut_ptr()) } != 0 {
@@ -126,17 +138,32 @@ impl PtyProcess for PortablePtyProcess {
             .master
             .lock()
             .map_err(|_| anyhow!("master lock poisoned"))?;
-        master.resize(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        })?;
+        master
+            .as_ref()
+            .ok_or_else(|| anyhow!("PTY is closed"))?
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })?;
         Ok(())
     }
 
     fn pid(&self) -> u32 {
         self.pid
+    }
+
+    fn pty_size(&self) -> Option<(u16, u16)> {
+        let master = self.master.lock().ok()?;
+        let size = master.as_ref()?.get_size().ok()?;
+        Some((size.cols, size.rows))
+    }
+
+    fn close_output(&self) {
+        // Drop outside the lock: ClosePseudoConsole may wait for the reader to drain.
+        let master = self.master.lock().ok().and_then(|mut master| master.take());
+        drop(master);
     }
 
     fn set_resource_policy(&self, policy: &SessionResourcePolicy) -> Result<PolicyOutcome> {
@@ -176,44 +203,41 @@ impl PtyProcess for PortablePtyProcess {
         let status = child.wait()?;
         self.exited.store(true, Ordering::Release);
 
-        // ExitStatus::from_raw() 的参数含义因平台而异：
-        //   Unix: wait status 格式 — exit code 编码为 (code << 8)
-        //   Windows: 直接使用 exit code
         #[cfg(unix)]
         {
             use std::os::unix::process::ExitStatusExt;
-            if status.success() {
-                Ok(ExitStatus::from_raw(0))
-            } else {
-                Ok(ExitStatus::from_raw(1 << 8)) // exit code 1
-            }
+            Ok(ExitStatus::from_raw((status.exit_code() as i32) << 8))
         }
         #[cfg(windows)]
         {
             use std::os::windows::process::ExitStatusExt;
-            if status.success() {
-                Ok(ExitStatus::from_raw(0))
-            } else {
-                Ok(ExitStatus::from_raw(1))
-            }
+            Ok(ExitStatus::from_raw(status.exit_code()))
         }
     }
 
     fn kill(&self) -> Result<()> {
-        if self.exited.load(Ordering::Acquire) {
-            return Ok(());
+        #[cfg(windows)]
+        {
+            if let Some(job) = self.job.as_ref() {
+                return job.terminate();
+            }
+            if self.exited.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            return self
+                .process_handle
+                .as_ref()
+                .ok_or_else(|| anyhow!("No retained process handle"))?
+                .terminate();
         }
-
-        // 通过 OS API 按 PID 终止进程，绕过 child 互斥锁
-        // 解决 wait() 持锁阻塞导致 kill() 获取 child 锁死锁的问题
-        kill_process_by_pid(self.pid)?;
-
-        // Unix: kill 后回收子进程，防止僵尸
         #[cfg(unix)]
-        reap_child(self.pid);
-
-        self.exited.store(true, Ordering::Release);
-        Ok(())
+        {
+            if self.exited.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            // Only the wait owner reaps the child; this path sends a termination signal.
+            kill_process_by_pid(self.pid)
+        }
     }
 }
 
@@ -252,11 +276,13 @@ pub fn spawn_pty(config: PtyConfig) -> Result<PtySpawnResult> {
 
     let child = pair.slave.spawn_command(cmd)?;
     let pid = child.process_id().unwrap_or(0) as u32;
+    #[cfg(windows)]
+    let process_handle = job::ProcessHandle::open(pid).ok();
     let reader = pair.master.try_clone_reader()?;
     let writer = pair.master.take_writer()?;
 
     // Windows：把子进程挂进 KILL_ON_JOB_CLOSE Job，宿主暴毙时由内核清树。
-    // 创建失败（权限受限等）不阻断 spawn——显式 kill 路径仍有 taskkill /T 兜底。
+    // Job 分配失败时仍保留子进程句柄，显式 kill 不按可复用的 PID 查找进程。
     // 资源策略在同一处下发，但失败只降级、不影响孤儿防护（见 job::create_for_with_policy）。
     #[cfg(windows)]
     let job = if pid != 0 {
@@ -292,11 +318,13 @@ pub fn spawn_pty(config: PtyConfig) -> Result<PtySpawnResult> {
     Ok(PtySpawnResult {
         process: Arc::new(PortablePtyProcess {
             child: Mutex::new(child),
-            master: Mutex::new(pair.master),
+            master: Mutex::new(Some(pair.master)),
             exited: AtomicBool::new(false),
             pid,
             #[cfg(windows)]
             job,
+            #[cfg(windows)]
+            process_handle,
         }),
         reader,
         writer,
@@ -575,13 +603,48 @@ pub(crate) fn kill_process_tree_by_pid(pid: u32) -> Result<()> {
     kill_process_by_pid(pid)
 }
 
-/// Unix: 回收子进程，防止僵尸进程
-#[cfg(unix)]
-fn reap_child(pid: u32) {
-    // SAFETY: waitpid 是标准 POSIX 调用，pid 为有效进程 ID，
-    // WNOHANG 确保非阻塞，不会影响其他线程
-    unsafe {
-        let mut status: libc::c_int = 0;
-        libc::waitpid(pid as i32, &mut status, libc::WNOHANG);
+#[cfg(all(test, windows))]
+mod completion_tests {
+    use super::*;
+    #[test]
+    fn natural_exit_drains_conpty_tail_and_preserves_exit_code() {
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = (|| -> Result<()> {
+                let spawned = spawn_pty(PtyConfig {
+                    cols: 120,
+                    rows: 30,
+                    cwd: std::env::temp_dir(),
+                    command: std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".into()),
+                    args: vec![
+                        "/D".into(),
+                        "/Q".into(),
+                        "/C".into(),
+                        "(for /L %i in (1,1,2000) do @echo TAIL-%i) & exit /B 7".into(),
+                    ],
+                    env: HashMap::new(),
+                    env_remove: vec![],
+                    resource_policy: SessionResourcePolicy::default(),
+                })?;
+                let mut reader = spawned.reader;
+                let reading = std::thread::spawn(move || {
+                    let mut bytes = Vec::new();
+                    reader.read_to_end(&mut bytes).map(|_| bytes)
+                });
+                let exit = spawned.process.wait()?;
+                spawned.process.close_output();
+                let bytes = reading.join().map_err(|_| anyhow!("reader panicked"))??;
+                assert_eq!(exit.code(), Some(7));
+                let output = String::from_utf8_lossy(&bytes);
+                assert!(output.contains("TAIL-1"));
+                assert!(output.contains("TAIL-2000"));
+                Ok(())
+            })();
+            let _ = done_tx.send(result);
+        });
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(15))
+            .expect("ConPTY must reach EOF after natural exit")
+            .unwrap();
     }
 }

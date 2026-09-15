@@ -118,12 +118,11 @@ impl EventEmitter for WsEmitter {
                     .and_then(|v| v.as_str())
                     .unwrap_or_default();
 
-                let msg = serde_json::json!({
-                    "type": "output",
-                    "data": data,
-                })
-                .to_string();
-                self.publish(session_id, msg, true);
+                let mut message = serde_json::json!({ "type": "output", "data": data });
+                if let Some(sequence) = payload.get("endSeq").and_then(Value::as_u64) {
+                    message["endSeq"] = sequence.into();
+                }
+                self.publish(session_id, message.to_string(), true);
             }
             "terminal-exit" => {
                 let exit_code = payload

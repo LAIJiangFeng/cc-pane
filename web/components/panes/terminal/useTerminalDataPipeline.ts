@@ -73,7 +73,9 @@ export function useTerminalDataPipeline({
       renderer: renderer?.activeRenderer ?? "unknown", queuedChars: stats.queuedChars, inFlightChars: stats.inFlightChars,
       queuedWrites: stats.queuedWrites, oldestWaitMs: Math.min(stats.oldestWaitMs, 86_400_000),
       receivedChars: stats.receivedChars, writeCalls: stats.writeCalls, failedWrites: stats.failedWrites,
-      callbackMaxMs: Math.min(stats.callbackMaxMs, 86_400_000), hiddenChars: hiddenWriteBufferRef.current?.pendingLength() ?? 0,
+      callbackMaxMs: Math.min(stats.callbackMaxMs, 86_400_000), blocked: stats.blocked,
+      pendingCallbacks: stats.pendingCallbacks,
+      hiddenChars: hiddenWriteBufferRef.current?.pendingLength() ?? 0,
       resyncActive: resyncInProgressRef.current, contextLosses: renderer?.contextLossCount ?? 0,
       atlasClears: renderer?.atlasClearCount ?? 0, scrollbackLines: term.buffer.active.length };
   }), [currentSessionIdRef, hiddenWriteBufferRef, rendererControllerRef, resyncInProgressRef, terminalInstanceRef, writeFlowControlRef]);

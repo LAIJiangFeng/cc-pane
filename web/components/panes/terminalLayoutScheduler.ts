@@ -1,3 +1,7 @@
+import type { TerminalContainerSize, TerminalLayoutRequestOptions, TerminalLayoutScheduler } from "./terminalSessionGeometry";
+export type { TerminalContainerSize, TerminalLayoutRequestOptions, TerminalLayoutScheduler } from "./terminalSessionGeometry";
+import { isTerminalHostRenderable, isSanePtySize, requestTerminalRedraw } from "./terminalSessionGeometry";
+export { isTerminalHostRenderable } from "./terminalSessionGeometry";
 import type { FitAddon } from "@xterm/addon-fit";
 import type { Terminal } from "@xterm/xterm";
 import { deferTerminalLayoutDuringReplay } from "./terminalReplayPresentation";
@@ -7,34 +11,6 @@ import {
 } from "./terminalCompositionRecovery";
 
 type LayoutLogger = (event: string, payload?: Record<string, unknown>) => void;
-
-export interface TerminalContainerSize {
-  width: number;
-  height: number;
-}
-
-export interface TerminalLayoutRequestOptions {
-  focusIfSafe?: boolean;
-  delayMs?: number;
-  containerSize?: TerminalContainerSize;
-  minContainerDelta?: number;
-  force?: boolean;
-  /**
-   * Explicit Fit and foreground recovery repair a lost PTY resize even when
-   * xterm reports unchanged dimensions. This bypasses the drag-resize debounce.
-   */
-  forceBackendSync?: boolean;
-  allowInactive?: boolean;
-  onAfterLayout?: (term: Terminal) => void;
-}
-
-export interface TerminalLayoutScheduler {
-  schedule: (reason: string, options?: TerminalLayoutRequestOptions) => void;
-  flush: (reason: string, options?: TerminalLayoutRequestOptions) => Terminal | null;
-  cancel: () => void;
-  dispose: () => void;
-  hasPendingLayout: () => boolean;
-}
 
 interface CreateTerminalLayoutSchedulerOptions {
   getTerminal: () => Terminal | null;
@@ -48,16 +24,6 @@ interface CreateTerminalLayoutSchedulerOptions {
   repaint: (reason: string) => void;
   resizeBackend: (cols: number, rows: number) => void;
   logger: LayoutLogger;
-}
-
-export function isTerminalHostRenderable(host: HTMLElement | null): boolean {
-  if (!host || !host.isConnected) return false;
-
-  const style = window.getComputedStyle(host);
-  if (style.display === "none" || style.visibility === "hidden") return false;
-
-  const rect = host.getBoundingClientRect();
-  return rect.width > 1 && rect.height > 1;
 }
 
 function requestFrame(callback: FrameRequestCallback): number {
@@ -86,9 +52,29 @@ const VERIFY_REFIT_DELAY_MS = 120;
 const VERIFY_REFIT_REASON = "verify.refit";
 /** verify 未收敛时的有限重试上限，防止持续 reflow 下无限自链。 */
 const VERIFY_REFIT_MAX_ATTEMPTS = 3;
+/** 创建时宿主常是 320×8，skip 后要等布局落地再 fit，不能把 8×1 留给 PTY。 */
+const NOT_RENDERABLE_RETRY_MS = 200;
+const NOT_RENDERABLE_RETRY_MAX = 8;
 /** 后端 PTY resize 去抖窗口：拖拽期间 conpty 每次 resize 都整屏重绘，高频下发会留残行。 */
 const BACKEND_RESIZE_DEBOUNCE_MS = 250;
-const IME_COMPOSITION_RECOVERY_DELAY_MS = 150;
+
+function readProposedDimensions(
+  fitAddon: FitAddon,
+): { cols: number; rows: number } | null {
+  if (typeof fitAddon.proposeDimensions !== "function") return null;
+  try {
+    const proposed = fitAddon.proposeDimensions();
+    if (!proposed || proposed.cols <= 0 || proposed.rows <= 0) return null;
+    return { cols: proposed.cols, rows: proposed.rows };
+  } catch {
+    return null;
+  }
+}
+
+function proposedSizeMatchesTerminal(term: Terminal, fitAddon: FitAddon): boolean {
+  const proposed = readProposedDimensions(fitAddon);
+  return proposed !== null && proposed.cols === term.cols && proposed.rows === term.rows;
+}
 
 export function createTerminalLayoutScheduler({
   getTerminal,
@@ -117,8 +103,9 @@ export function createTerminalLayoutScheduler({
   let lastSize: { cols: number; rows: number } | null = null;
   let lastContainerSize: TerminalContainerSize | null = null;
   let verifyAttempts = 0;
+  let notRenderableAttempts = 0;
   let imeLayoutBlocked = false;
-  let imeRecoveryTimerId: ReturnType<typeof setTimeout> | null = null;
+  let notRenderableTimerId: ReturnType<typeof setTimeout> | null = null;
 
   const cancel = () => {
     if (timerId !== null) {
@@ -167,8 +154,6 @@ export function createTerminalLayoutScheduler({
     resizeBackend(cols, rows);
   };
 
-  // leading+trailing 去抖：间隔够久立即发（普通 resize 无感），
-  // 拖拽等高频场景只发最终尺寸。
   const scheduleBackendResize = (cols: number, rows: number) => {
     const elapsed = Date.now() - lastBackendResizeAt;
     if (backendTimerId === null && elapsed >= BACKEND_RESIZE_DEBOUNCE_MS) {
@@ -193,8 +178,7 @@ export function createTerminalLayoutScheduler({
     options: TerminalLayoutRequestOptions = {},
   ): Terminal | null => {
     if (disposed) return null;
-    // focus/visible 后常紧跟 ResizeObserver；合并调度只能替换测量参数，
-    // 不能吞掉尚未执行的 PTY 同步。IME/隐藏导致本轮跳过时也保留到 fit 成功。
+    // Preserve pending PTY synchronization through visibility and IME deferrals.
     if (pendingBackendSync) {
       options = {
         ...options,
@@ -235,8 +219,49 @@ export function createTerminalLayoutScheduler({
         width: rect.width,
         height: rect.height,
       });
+      scheduleNotRenderableRetry();
       return null;
     }
+
+    const proposed = fitAddon.proposeDimensions?.();
+    if (proposed && !isSanePtySize(proposed.cols, proposed.rows)) {
+      pendingReason = reason;
+      logger("layout.skip.degenerate", {
+        reason,
+        cols: proposed.cols,
+        rows: proposed.rows,
+        width: rect.width,
+        height: rect.height,
+      });
+      return null;
+    }
+
+    // IME used to force fit + full `term.refresh` after every committed
+    // candidate. When cols/rows did not change that hitch delayed the next
+    // pinyin. Still fit when the host actually changed size, or when a PTY
+    // sync is pending (`forceBackendSync` is merged in above).
+    if (
+      options.skipIfUnchanged &&
+      !options.forceBackendSync &&
+      proposedSizeMatchesTerminal(term, fitAddon)
+    ) {
+      lastContainerSize = { width: rect.width, height: rect.height };
+      pendingReason = null;
+      logger("layout.skip.unchanged", {
+        reason,
+        cols: term.cols,
+        rows: term.rows,
+      });
+      return term;
+    }
+
+    // Capture before fit: xterm resize/WebGL recreate can blur the helper
+    // textarea, and window.focus recovery does not pass focusIfSafe. Without
+    // this, clicking the window fits then steals typing.
+    const textarea = term.textarea;
+    const restoreFocus =
+      Boolean(options.focusIfSafe && shouldFocusTerminal()) ||
+      Boolean(textarea && document.activeElement === textarea);
 
     try {
       fitAddon.fit();
@@ -250,11 +275,22 @@ export function createTerminalLayoutScheduler({
 
     repaint(reason);
 
-    if (options.focusIfSafe && shouldFocusTerminal()) {
+    if (restoreFocus) {
       term.focus();
     }
 
     const { cols, rows } = term;
+    if (!isSanePtySize(cols, rows)) {
+      pendingReason = reason;
+      logger("layout.skip.degenerate", {
+        reason,
+        cols,
+        rows,
+        width: rect.width,
+        height: rect.height,
+      });
+      return null;
+    }
     const sizeChanged = lastSize?.cols !== cols || lastSize?.rows !== rows;
     if (sizeChanged) {
       lastSize = { cols, rows };
@@ -284,8 +320,13 @@ export function createTerminalLayoutScheduler({
       sessionId: getSessionId(),
     });
     options.onAfterLayout?.(term);
+    if (notRenderableTimerId !== null) {
+      clearTimeout(notRenderableTimerId);
+      notRenderableTimerId = null;
+    }
     if (reason !== VERIFY_REFIT_REASON) {
       verifyAttempts = 0;
+      notRenderableAttempts = 0;
       scheduleVerifyRefit();
     } else if (verifyAttempts < VERIFY_REFIT_MAX_ATTEMPTS) {
       // verify 补救后再复核一轮，未收敛可有限重试（多轮 reflow 场景）。
@@ -297,6 +338,28 @@ export function createTerminalLayoutScheduler({
   // fit 是事件驱动的单次执行；嵌套分屏在 fit 后可能还有一轮 reflow，
   // 之后 ResizeObserver 不再触发，终端会永久停在旧 cols/rows。
   // 延迟一拍复核 proposeDimensions，与实际不一致就强制补一次 fit（每轮最多一次）。
+  const scheduleNotRenderableRetry = () => {
+    if (notRenderableAttempts >= NOT_RENDERABLE_RETRY_MAX) return;
+    if (notRenderableTimerId !== null) return;
+    notRenderableTimerId = setTimeout(() => {
+      notRenderableTimerId = null;
+      if (disposed) return;
+      if (!isTerminalHostRenderable(getHost())) {
+        notRenderableAttempts += 1;
+        if (notRenderableAttempts < NOT_RENDERABLE_RETRY_MAX) {
+          scheduleNotRenderableRetry();
+        }
+        return;
+      }
+      notRenderableAttempts = 0;
+      applyLayout(pendingReason ?? "layout.retry.renderable", {
+        force: true,
+        forceBackendSync: true,
+        allowInactive: true,
+      });
+    }, NOT_RENDERABLE_RETRY_MS);
+  };
+
   const scheduleVerifyRefit = () => {
     if (verifyTimerId !== null) {
       clearTimeout(verifyTimerId);
@@ -308,13 +371,8 @@ export function createTerminalLayoutScheduler({
       const fitAddon = getFitAddon();
       if (!term || !fitAddon || !isTerminalHostRenderable(getHost())) return;
 
-      let proposed: { cols: number; rows: number } | undefined;
-      try {
-        proposed = fitAddon.proposeDimensions();
-      } catch {
-        return;
-      }
-      if (!proposed || proposed.cols <= 0 || proposed.rows <= 0) return;
+      const proposed = readProposedDimensions(fitAddon);
+      if (!proposed) return;
       if (proposed.cols === term.cols && proposed.rows === term.rows) return;
 
       logger("layout.verify.mismatch", {
@@ -374,41 +432,52 @@ export function createTerminalLayoutScheduler({
   const disposeCompositionRecovery = bindTerminalCompositionRecovery(
     getTerminal()?.textarea,
     (composing) => {
-      if (!composing) return;
-      imeLayoutBlocked = true;
-      if (imeRecoveryTimerId !== null) {
-        clearTimeout(imeRecoveryTimerId);
-        imeRecoveryTimerId = null;
-      }
-      cancel();
+      imeLayoutBlocked = composing;
+      if (composing) cancel();
     },
     () => {
-      if (imeRecoveryTimerId !== null) clearTimeout(imeRecoveryTimerId);
-      imeRecoveryTimerId = setTimeout(() => {
-        imeRecoveryTimerId = null;
-        if (disposed) return;
-        imeLayoutBlocked = false;
-        flush("ime.compositionend", { force: true, allowInactive: true });
-      }, IME_COMPOSITION_RECOVERY_DELAY_MS);
+      if (disposed) return;
+      imeLayoutBlocked = false;
+      // No deferred fit and no PTY sync: skip proposeDimensions too.
+      // FitAddon.proposeDimensions() forces a layout reflow; doing that
+      // after every 选字 hitchs the next pinyin even when size is unchanged.
+      if (!pendingReason && !pendingBackendSync) return;
+      flush("ime.compositionend", {
+        force: true,
+        allowInactive: true,
+        skipIfUnchanged: true,
+      });
     },
     compositionFrameScheduler,
   );
 
+  let cancelRedraw = () => {};
+  const redrawBackend = () => {
+    if (disposed) return;
+    cancelRedraw();
+    if (backendTimerId !== null) clearTimeout(backendTimerId);
+    backendTimerId = null;
+    pendingBackendSize = null;
+    cancelRedraw = requestTerminalRedraw(getTerminal, getSessionId, canResizeBackend, sendBackendResize);
+  };
+
   return {
     schedule,
     flush,
+    redrawBackend,
     cancel,
     dispose: () => {
       disposed = true;
+      cancelRedraw();
       cancel();
       disposeCompositionRecovery();
-      if (imeRecoveryTimerId !== null) {
-        clearTimeout(imeRecoveryTimerId);
-        imeRecoveryTimerId = null;
-      }
       if (verifyTimerId !== null) {
         clearTimeout(verifyTimerId);
         verifyTimerId = null;
+      }
+      if (notRenderableTimerId !== null) {
+        clearTimeout(notRenderableTimerId);
+        notRenderableTimerId = null;
       }
       if (backendTimerId !== null) {
         clearTimeout(backendTimerId);

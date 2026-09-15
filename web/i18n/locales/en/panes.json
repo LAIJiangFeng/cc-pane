@@ -1,4 +1,6 @@
 {
+  "rendererRecoveryFailed": "The terminal display could not recover. Retrying restores the display without rerunning the task.",
+  "retryRendererRecovery": "Retry display recovery",
   "ready": "Ready",
   "sshLocalDropUnsupported": "Local files can't be dropped into an SSH terminal",
   "sshLocalDropUnsupportedHint": "The {{pathCount}} dropped path(s) live on this machine and don't exist on the remote host. Upload them through Remote Files first.",
