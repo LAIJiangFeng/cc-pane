@@ -60,7 +60,12 @@ export function compareReports(baseline, candidate, options = {}) {
   const rows = [];
   const regressions = [];
 
-  for (const metric of METRICS) {
+  const metrics = toNumber(base.maxFrontendUpdateIntervalMs) != null && toNumber(cand.maxFrontendUpdateIntervalMs) != null
+    ? METRICS.map(metric => metric.key === "maxFrontendAgeMs"
+      ? { key: "maxFrontendUpdateIntervalMs", label: "前端更新最大间隔 (ms)", get: r => r.maxFrontendUpdateIntervalMs }
+      : metric)
+    : METRICS;
+  for (const metric of metrics) {
     const b = toNumber(metric.get(base));
     const c = toNumber(metric.get(cand));
 

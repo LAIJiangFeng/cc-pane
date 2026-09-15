@@ -4,10 +4,9 @@ import { save as saveFileDialog } from "@tauri-apps/plugin-dialog";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
-import { filesystemService, providerService, terminalService } from "@/services";
+import { filesystemService, providerService } from "@/services";
 import { isTauriRuntime } from "@/services/runtime";
 import { getErrorMessage } from "@/utils";
-import { noteTerminalGeometry } from "@/utils/terminalCast";
 import { buildTerminalExportFileName, serializeTerminalBuffer } from "./terminalBufferSnapshot";
 import { copyTerminalSelection } from "./terminalClipboard";
 import { requestTerminalFitAll } from "./terminalFitEvents";
@@ -41,6 +40,7 @@ interface UseTerminalContextMenuActionsOptions {
    * 否则镜像里点一次刷新会改掉主视图的 PTY 尺寸。缺省保守取 false。
    */
   canResizeBackend?: () => boolean;
+  redrawBackend?: () => void;
   /**
    * 「重置终端缓冲区」的快照重建入口（复用 desync 恢复器，含闸门/积压时序）。
    * 成功 = 画面已从后端 photo+delta 重建（含可恢复的回滚历史）；失败/缺省时
@@ -49,13 +49,6 @@ interface UseTerminalContextMenuActionsOptions {
    */
   requestBufferResync?: () => Promise<boolean>;
 }
-
-/**
- * SIGWINCH 抖动的两次 resize 间隔。要大于一帧、又不至于让用户看见明显闪动。
- * 直接调 terminalService.resize（不走 layoutScheduler），否则会被它的 250ms
- * 去抖合并成一次，抖动失效。
- */
-const REDRAW_NUDGE_INTERVAL_MS = 80;
 
 export function useTerminalContextMenuActions({
   terminalRef,
@@ -69,6 +62,7 @@ export function useTerminalContextMenuActions({
   repaintTerminal,
   canResizeBackend = () => false,
   onExplicitGeometryChange,
+  redrawBackend,
   requestBufferResync,
 }: UseTerminalContextMenuActionsOptions) {
   const { t } = useTranslation("panes");
@@ -120,38 +114,8 @@ export function useTerminalContextMenuActions({
    */
   const requestCliRedraw = useCallback(() => {
     onExplicitGeometryChange?.();
-    if (!canResizeBackend()) return;
-    const term = terminalRef.current;
-    const activeSessionId = currentSessionIdRef.current ?? sessionId;
-    if (!term || !activeSessionId) return;
-
-    const { cols, rows } = term;
-    if (cols <= 1 || rows <= 0) return;
-
-    const send = (nextCols: number, nextRows: number) => {
-      noteTerminalGeometry(activeSessionId, nextCols, nextRows);
-      void terminalService
-        .resize({ sessionId: activeSessionId, cols: nextCols, rows: nextRows })
-        .catch((error) => {
-          debugLog("context-menu.refresh.resize.failed", {
-            cols: nextCols,
-            rows: nextRows,
-            error: getErrorMessage(error),
-          });
-        });
-    };
-
-    debugLog("context-menu.refresh.sigwinch", { cols, rows });
-    send(cols - 1, rows);
-    window.setTimeout(() => {
-      // 抖回来时重新取当前尺寸：这 80ms 内可能发生了真实的布局变化。
-      // 后端 resize 不会修改 xterm 的 cols/rows，因此无需（也不能）把“少一列”
-      // 猜成临时抖动；直接使用当前几何，避免把刚完成的真实 resize 回写成旧尺寸。
-      if (currentSessionIdRef.current !== activeSessionId) return;
-      const current = terminalRef.current;
-      send(current?.cols ?? cols, current?.rows ?? rows);
-    }, REDRAW_NUDGE_INTERVAL_MS);
-  }, [canResizeBackend, currentSessionIdRef, debugLog, onExplicitGeometryChange, sessionId, terminalRef]);
+    if (canResizeBackend()) redrawBackend?.();
+  }, [canResizeBackend, onExplicitGeometryChange, redrawBackend]);
 
   const handleMenuRefreshTerminal = useCallback(() => {
     const term = terminalRef.current;

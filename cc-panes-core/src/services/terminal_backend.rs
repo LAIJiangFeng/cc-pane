@@ -8,6 +8,7 @@ use crate::models::{
     TerminalReplaySnapshot, TerminalSessionProvenance,
 };
 use crate::services::daemon_client::TerminalDaemonClient;
+use crate::services::terminal_output_flow::OutputFlowDiagnostics;
 use crate::services::terminal_service::KillReason;
 use crate::services::terminal_service::SessionOutput;
 use crate::services::terminal_service::SessionStatus;
@@ -53,6 +54,11 @@ fn current_epoch_millis() -> u64 {
         .unwrap_or(0)
 }
 
+/// Runs only the in-memory registration under the daemon publication fence.
+/// Slow environment/PTY preparation happens before invoking this callback.
+pub type SessionPublisher =
+    dyn Fn(&str, &mut dyn FnMut() -> anyhow::Result<()>) -> anyhow::Result<()> + Send + Sync;
+
 /// Backend boundary for terminal session operations.
 ///
 /// The default implementation delegates to the in-process `TerminalService`.
@@ -72,6 +78,15 @@ pub trait TerminalBackend: Send + Sync {
             session_id,
             resolved_model_id,
         })
+    }
+    fn create_session_published(
+        &self,
+        _request: CreateSessionRequest,
+        _publisher: &SessionPublisher,
+    ) -> AppResult<CreateSessionOutcome> {
+        Err(AppError::from(
+            "This backend does not support staged session publication",
+        ))
     }
     fn write(&self, session_id: &str, data: &str) -> AppResult<()>;
 
@@ -136,6 +151,10 @@ pub trait TerminalBackend: Send + Sync {
     /// 不返回 Result——回执是骑在数据路径上的优化，会话销毁与在途回执天生会赛跑，
     /// 为此报错只会在日志里刷噪音。
     fn ack_terminal_output(&self, _session_id: &str, _processed_end_seq: u64) {}
+    /// 只读投递水位快照。默认 None：daemon 客户端会话活在 daemon 进程，本地没账。
+    fn get_terminal_flow_diagnostics(&self, _session_id: &str) -> Option<OutputFlowDiagnostics> {
+        None
+    }
     /// 设置共享 MCP running URL 覆盖表（control 通道推送而来）。
     ///
     /// 默认 no-op：daemon 客户端后端的会话活在 daemon 进程，推送经 control WS 直达
@@ -412,6 +431,44 @@ impl DaemonTerminalBackend {
     }
 }
 
+fn create_core_session(
+    service: &TerminalService,
+    request: CreateSessionRequest,
+    publisher: Option<&SessionPublisher>,
+) -> AppResult<CreateSessionOutcome> {
+    TerminalService::create_session_with_outcome(
+        service,
+        request.launch_id.as_deref(),
+        &request.project_path,
+        request.cols,
+        request.rows,
+        request.workspace_name.as_deref(),
+        request.provider_id.as_deref(),
+        request.model_id.as_deref(),
+        request.provider_selection,
+        request.launch_profile_id.as_deref(),
+        request.workspace_path.as_deref(),
+        request.workspace_snapshot_id.as_deref(),
+        request.effective_cli_tool(),
+        request.resume_id.as_deref(),
+        request.skip_mcp,
+        request.append_system_prompt.as_deref(),
+        request.initial_prompt.as_deref(),
+        request.yolo_mode,
+        request.adapter_options.as_ref(),
+        request.extra_env.as_ref(),
+        request.ssh.as_ref(),
+        request.wsl.as_ref(),
+        publisher,
+    )
+    .map_err(|error| {
+        error
+            .downcast_ref::<AppError>()
+            .cloned()
+            .unwrap_or_else(|| AppError::from(error))
+    })
+}
+
 impl TerminalBackend for TerminalService {
     fn create_session(&self, request: CreateSessionRequest) -> AppResult<String> {
         TerminalService::create_session(
@@ -450,36 +507,15 @@ impl TerminalBackend for TerminalService {
         &self,
         request: CreateSessionRequest,
     ) -> AppResult<CreateSessionOutcome> {
-        TerminalService::create_session_with_outcome(
-            self,
-            request.launch_id.as_deref(),
-            &request.project_path,
-            request.cols,
-            request.rows,
-            request.workspace_name.as_deref(),
-            request.provider_id.as_deref(),
-            request.model_id.as_deref(),
-            request.provider_selection,
-            request.launch_profile_id.as_deref(),
-            request.workspace_path.as_deref(),
-            request.workspace_snapshot_id.as_deref(),
-            request.effective_cli_tool(),
-            request.resume_id.as_deref(),
-            request.skip_mcp,
-            request.append_system_prompt.as_deref(),
-            request.initial_prompt.as_deref(),
-            request.yolo_mode,
-            request.adapter_options.as_ref(),
-            request.extra_env.as_ref(),
-            request.ssh.as_ref(),
-            request.wsl.as_ref(),
-        )
-        .map_err(|error| {
-            error
-                .downcast_ref::<AppError>()
-                .cloned()
-                .unwrap_or_else(|| AppError::from(error))
-        })
+        create_core_session(self, request, None)
+    }
+
+    fn create_session_published(
+        &self,
+        request: CreateSessionRequest,
+        publisher: &SessionPublisher,
+    ) -> AppResult<CreateSessionOutcome> {
+        create_core_session(self, request, Some(publisher))
     }
 
     fn write(&self, session_id: &str, data: &str) -> AppResult<()> {
@@ -552,6 +588,12 @@ impl TerminalBackend for TerminalService {
         let _ = TerminalService::ack_terminal_output(self, session_id, processed_end_seq);
     }
 
+    fn get_terminal_flow_diagnostics(&self, session_id: &str) -> Option<OutputFlowDiagnostics> {
+        TerminalService::get_terminal_flow_diagnostics(self, session_id)
+            .ok()
+            .flatten()
+    }
+
     fn apply_scrollback_setting(&self, scrollback_rows: u32) {
         let _ = TerminalService::apply_scrollback_setting(self, scrollback_rows);
     }
@@ -588,6 +630,18 @@ impl TerminalBackend for InProcessTerminalBackend {
         <TerminalService as TerminalBackend>::create_session_with_outcome(
             self.service.as_ref(),
             request,
+        )
+    }
+
+    fn create_session_published(
+        &self,
+        request: CreateSessionRequest,
+        publisher: &SessionPublisher,
+    ) -> AppResult<CreateSessionOutcome> {
+        <TerminalService as TerminalBackend>::create_session_published(
+            self.service.as_ref(),
+            request,
+            publisher,
         )
     }
 
@@ -705,9 +759,34 @@ impl TerminalBackend for InProcessTerminalBackend {
     fn automatic_write_authority(&self, _session_id: &str) -> AppResult<AutomaticWriteAuthority> {
         Ok(AutomaticWriteAuthority::ExclusiveInProcess)
     }
+
+    fn ack_terminal_output(&self, session_id: &str, processed_end_seq: u64) {
+        <TerminalService as TerminalBackend>::ack_terminal_output(
+            self.service.as_ref(),
+            session_id,
+            processed_end_seq,
+        )
+    }
+
+    fn get_terminal_flow_diagnostics(&self, session_id: &str) -> Option<OutputFlowDiagnostics> {
+        <TerminalService as TerminalBackend>::get_terminal_flow_diagnostics(
+            self.service.as_ref(),
+            session_id,
+        )
+    }
 }
 
 impl TerminalBackend for DaemonTerminalBackend {
+    fn get_terminal_flow_diagnostics(&self, session_id: &str) -> Option<OutputFlowDiagnostics> {
+        self.client
+            .get_terminal_flow_diagnostics(session_id)
+            .inspect_err(
+                |error| tracing::warn!(%session_id, %error, "daemon flow diagnostics unavailable"),
+            )
+            .ok()
+            .flatten()
+    }
+
     fn create_session(&self, request: CreateSessionRequest) -> AppResult<String> {
         self.create_session_with_outcome(request)
             .map(|outcome| outcome.session_id)

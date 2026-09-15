@@ -6,7 +6,11 @@ import { useShortcutsStore } from "@/stores";
 import { terminalService } from "@/services";
 import { TERMINAL_APP_MENU_PASTE_EVENT } from "@/utils/appMenuPaste";
 import { attachTerminalInputDebugLog } from "../terminalInputDebug";
-import { attachTerminalInputTrace, summarizeTerminalInputData } from "../terminalInputTrace";
+import {
+  attachTerminalInputTrace,
+  isTerminalInputTraceEnabled,
+  summarizeTerminalInputData,
+} from "../terminalInputTrace";
 import { attachTerminalDomInputFallback } from "../terminalDomInputFallback";
 import { attachTerminalImeGuard, isLinuxWebKitImeEnvironment } from "../terminalImeGuard";
 import { isTerminalPasteShortcut } from "../terminalKeyboard";
@@ -163,11 +167,15 @@ export function attachTerminalTextareaIntegration({
     if (IS_MAC) {
       addNativeMenuBlocker(textarea);
     }
-    inputDebugCleanupRef.current = attachTerminalInputDebugLog(
-      textarea,
-      debugLog,
-      () => ++inputTraceSeqRef.current,
-    );
+    // Per-keystroke capture listeners + payload build hitch IME. Only attach
+    // when the opt-in input trace flag is on (`cc-panes:trace-terminal-input`).
+    if (isTerminalInputTraceEnabled({ isDev: TERMINAL_DEBUG, isMac: IS_MAC })) {
+      inputDebugCleanupRef.current = attachTerminalInputDebugLog(
+        textarea,
+        debugLog,
+        () => ++inputTraceSeqRef.current,
+      );
+    }
     inputTraceRef.current = attachTerminalInputTrace({
       textarea,
       isDev: TERMINAL_DEBUG,

@@ -481,8 +481,7 @@ impl EventEmitter for WsEmitter {
                         Some(exit_code as i32),
                     );
                 }
-                // 会话不会再产出新内容：宽限一小段等 reader 排空后落盘，
-                // 之后重启才有历史可重放。
+                // terminal-exit follows reader/batcher completion: persist the final output.
                 self.persist_session_output(session_id);
                 self.drop_session_subscribers(session_id);
             }

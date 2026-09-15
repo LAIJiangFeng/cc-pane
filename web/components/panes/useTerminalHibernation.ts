@@ -24,6 +24,7 @@ import {
 import type { TerminalHiddenWriteBuffer } from "./terminalHiddenWriteBuffer";
 import type { TerminalRendererController } from "./terminalRendererController";
 import { withTerminalReplayPresentation } from "./terminalReplayPresentation";
+import { restoreTerminalReplayGeometry, type ReplayGeometryTerminal } from "./terminalReplayGeometry";
 
 interface RefValue<T> {
   current: T;
@@ -115,6 +116,8 @@ export function useTerminalHibernation({
     hibernatedStateRef.current = createHibernatedTerminalState({
       sessionId,
       base,
+      cols: term.cols,
+      rows: term.rows,
       onOverflow: () => {
         debugLog("hibernate.overflow", { hibernateSessionId: sessionId });
       },
@@ -123,6 +126,8 @@ export function useTerminalHibernation({
     debugLog("hibernate.begin", {
       hibernateSessionId: sessionId,
       baseChars: base.length,
+      cols: term.cols,
+      rows: term.rows,
     });
     bumpInstanceEpoch();
   }, [
@@ -262,7 +267,7 @@ export function collectHibernatedOutput({
 interface ReplayHibernationWakeOptions {
   canWrite?: () => boolean;
   wake: HibernatedTerminalState;
-  term: Pick<Terminal, "writeln">;
+  term: Pick<Terminal, "writeln"> & ReplayGeometryTerminal;
   /** 已是成品 VT 流，不可二次渲染。 */
   writeTerminalData: (data: string) => Promise<void>;
   syncTrackedBufferType: (reason: string) => void;
@@ -289,6 +294,9 @@ export async function replayHibernationWake({
   debugLog,
 }: ReplayHibernationWakeOptions): Promise<void> {
   if (canWrite && !canWrite()) throw new Error("Terminal replay cancelled");
+  // Keep the last known grid even when the daemon can only return a raw delta.
+  // A checkpoint, when available, supplies its own authoritative geometry below.
+  restoreTerminalReplayGeometry(term, wake);
   const wakeData = wake.wakeData();
   if (wakeData !== null) {
     if (wakeData) {

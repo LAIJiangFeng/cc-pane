@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { withTerminalReplayPresentation } from "./terminalReplayPresentation";
+import {
+  _setPresentationWatchdogMsForTest,
+  getActivePresentationDebug,
+  PRESENTATION_WATCHDOG_MS,
+  withTerminalReplayPresentation,
+} from "./terminalReplayPresentation";
 import { createTerminalLayoutScheduler } from "./terminalLayoutScheduler";
 import type { Terminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
@@ -180,4 +185,35 @@ describe("static replay presentation", () => {
     await done;
     expect(element.style.opacity).toBe("");
   });
+});
+
+describe("replay presentation watchdog", () => {
+  beforeEach(() => {
+    // 文件级 hook 开了 fake timers；永不 settle 的 replay 不能走 advanceTimersByTimeAsync。
+    vi.useRealTimers();
+    _setPresentationWatchdogMsForTest(40);
+  });
+
+  afterEach(() => {
+    _setPresentationWatchdogMsForTest(PRESENTATION_WATCHDOG_MS);
+  });
+
+  it("forces finish when replay never settles, then allows a later replay", async () => {
+    const { host, element, term } = setup();
+    const timedOut = withTerminalReplayPresentation(term, () => new Promise(() => {})).catch(error => error);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(element.style.opacity).toBe("0");
+    expect(host.querySelector(".cc-terminal-static-frame")).toBeTruthy();
+    expect(getActivePresentationDebug()[0]).toMatchObject({ depth: 1, version: 1 });
+
+    await new Promise((resolve) => setTimeout(resolve, 160));
+    expect(element.style.opacity).toBe("");
+    expect(host.querySelector(".cc-terminal-static-frame")).toBeNull();
+    expect(getActivePresentationDebug()).toEqual([]);
+
+    expect(await timedOut).toBeInstanceOf(Error);
+    const second = withTerminalReplayPresentation(term, async () => "ok");
+    await expect(second).resolves.toBe("ok");
+    expect(element.style.opacity).toBe("");
+  }, 5_000);
 });

@@ -1,5 +1,6 @@
 mod app_paths;
 pub mod atomic_file;
+pub mod binary_identity;
 pub mod claude_path;
 pub mod command;
 pub mod context_size;
@@ -9,6 +10,7 @@ pub mod git_command;
 pub mod host_path;
 pub mod launch_request;
 pub mod orchestrator_manifest;
+pub mod orchestrator_manifest_lifecycle;
 pub mod path_normalize;
 pub mod path_validator;
 pub mod project_dirs;

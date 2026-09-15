@@ -1,6 +1,5 @@
 import type { Terminal } from "@xterm/xterm";
 
-import { terminalService } from "@/services/terminalService";
 import { getErrorMessage } from "@/utils";
 
 interface RefValue<T> {
@@ -15,6 +14,7 @@ interface ReconnectTerminalSessionOptions {
   onReconnectRef: RefValue<(() => Promise<string | null>) | null | undefined>;
   unbindSessionCallbacks: () => void;
   bindSessionCallbacks: (sessionId: string) => Promise<void>;
+  syncGeometry: () => void;
 }
 
 /** SSH 会话断线重连（从 TerminalView 抽出，行数棘轮）。 */
@@ -26,6 +26,7 @@ export async function reconnectTerminalSession({
   onReconnectRef,
   unbindSessionCallbacks,
   bindSessionCallbacks,
+  syncGeometry,
 }: ReconnectTerminalSessionOptions): Promise<void> {
   const term = terminalInstanceRef.current;
   if (!term || isReconnectingRef.current) return;
@@ -40,6 +41,7 @@ export async function reconnectTerminalSession({
     unbindSessionCallbacks();
 
     const newSessionId = await onReconnect();
+    if (terminalInstanceRef.current !== term) return;
     if (!newSessionId) {
       term.writeln("\x1b[31mReconnection failed.\x1b[0m");
       term.writeln("\x1b[36mPress Enter to retry.\x1b[0m");
@@ -54,11 +56,8 @@ export async function reconnectTerminalSession({
     await bindSessionCallbacks(newSessionId);
 
     // Keep the backend PTY size aligned with the current terminal size.
-    terminalService.resize({
-      sessionId: newSessionId,
-      cols: term.cols,
-      rows: term.rows,
-    });
+    if (terminalInstanceRef.current !== term) return;
+    syncGeometry();
 
     isDisconnectedRef.current = false;
     isReconnectingRef.current = false;

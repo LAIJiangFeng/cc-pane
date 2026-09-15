@@ -82,3 +82,13 @@ test("formatComparison includes a human-readable verdict line", () => {
   assert.match(text, /REGRESSION/);
   assert.match(text, /maxHeapUsedBytes/);
 });
+
+test("compares observed update intervals while retaining legacy age checks", () => {
+  const baseline = report({ maxFrontendAgeMs: 700, maxFrontendUpdateIntervalMs: 15000 });
+  const candidate = report({ maxFrontendAgeMs: 14700, maxFrontendUpdateIntervalMs: 15000 });
+  assert.equal(compareReports(baseline, candidate).ok, true);
+  assert.deepEqual(compareReports(baseline, { ...candidate, maxFrontendUpdateIntervalMs: 30700 }).regressions,
+    ["maxFrontendUpdateIntervalMs"]);
+  assert.deepEqual(compareReports(baseline, { ...candidate, maxFrontendUpdateIntervalMs: null }).regressions,
+    ["maxFrontendAgeMs"]);
+});

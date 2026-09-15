@@ -127,6 +127,8 @@ const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
     // 后台休眠（docs/71 §3.1）：epoch 自增触发 init effect 重跑——休眠态跳过构造、
     // 唤醒态全量重建。休眠/唤醒状态机在 useTerminalHibernation。
     const [instanceEpoch, setInstanceEpoch] = useState(0);
+    const [rendererFailed, setRendererFailed] = useState(false);
+    const rendererRecoveryRef = useRef<{ sessionId: string; attempts: number } | null>(null);
     const serializeAddonRef = useRef<SerializeAddon | null>(null);
     const rendererControllerRef = useRef<TerminalRendererController | null>(null);
     const lastAppearanceFontRef = useRef<string | null>(null);
@@ -340,6 +342,24 @@ const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
     const bumpInstanceEpoch = useCallback(() => {
       setInstanceEpoch((epoch) => epoch + 1);
     }, []);
+    const recoverRenderer = useCallback((_error: Error) => {
+      const sessionId = currentSessionIdRef.current ?? props.sessionId;
+      if (!sessionId) { setRendererFailed(true); return; }
+      const previous = rendererRecoveryRef.current;
+      if (previous?.sessionId === sessionId && previous.attempts > 0) {
+        setRendererFailed(true);
+        return;
+      }
+      rendererRecoveryRef.current = { sessionId, attempts: 1 };
+      setRendererFailed(false);
+      bumpInstanceEpoch();
+    }, [bumpInstanceEpoch, props.sessionId]);
+    useEffect(() => {
+      if (props.sessionId && rendererRecoveryRef.current?.sessionId !== props.sessionId) {
+        rendererRecoveryRef.current = null;
+        setRendererFailed(false);
+      }
+    }, [props.sessionId]);
     const { hibernatedStateRef, wakeStateRef, notifyVisibility } = useTerminalHibernation({
       terminalInstanceRef,
       currentSessionIdRef,
@@ -550,7 +570,10 @@ const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
     // Initialize xterm and create or attach the backend session.
     // 依赖 instanceEpoch：休眠/唤醒通过 epoch 自增触发整轮 teardown + 重建。
     useTerminalInstanceInit({
-      props,
+      props: rendererRecoveryRef.current
+        ? { ...props, sessionId: rendererRecoveryRef.current.sessionId, restoring: false }
+        : props,
+      onRendererFailure: recoverRenderer,
       t,
       instanceEpoch,
       isDark,
@@ -722,6 +745,7 @@ const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
       canResizeBackend: () => (drivesBackendPty && !readOnlyRef.current) || resizeBackendPtyRef.current,
       onExplicitGeometryChange: markExplicitGeometryChange,
       requestBufferResync: () => overflowResyncRef.current?.() ?? Promise.resolve(false),
+      redrawBackend: () => layoutSchedulerRef.current?.redrawBackend(),
     });
 
     return (
@@ -763,6 +787,15 @@ const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
               className="cc-terminal-host h-full w-full overflow-hidden [&_.xterm]:h-full"
             />
             <TerminalZoomHud fontSize={terminalFontSize} />
+            {rendererFailed && (
+              <div role="alert" className="absolute inset-x-2 bottom-2 rounded border bg-[var(--app-bg)] p-3 text-sm">
+                <p>{t("rendererRecoveryFailed")}</p>
+                <button className="mt-2 underline" onClick={() => {
+                  if (rendererRecoveryRef.current) rendererRecoveryRef.current.attempts = 0;
+                  recoverRenderer(new Error("User requested renderer recovery"));
+                }}>{t("retryRendererRecovery")}</button>
+              </div>
+            )}
           </div>
         </TerminalContextMenu>
       </div>

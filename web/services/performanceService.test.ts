@@ -2,9 +2,27 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const runtime = vi.hoisted(() => ({ invoke: vi.fn(), isTauri: vi.fn(() => true) }));
 vi.mock("./runtime", () => ({ invokeIfTauri: runtime.invoke, isTauriRuntime: runtime.isTauri }));
 import { startPerformanceSampling } from "./performanceService";
+import { registerTerminalPerformanceSource } from "./performanceMetrics";
 
 afterEach(() => { vi.useRealTimers(); vi.clearAllMocks(); });
 describe("performance sampler lifecycle", () => {
+  it("keeps frontend-only flow diagnostics out of the strict recorder DTO", () => {
+    runtime.invoke.mockResolvedValue(undefined);
+    const remove = registerTerminalPerformanceSource(() => ({
+      sessionId: "input-probe", visible: true, renderer: "webgl",
+      queuedChars: 0, inFlightChars: 0, queuedWrites: 0, receivedChars: 1,
+      writeCalls: 1, failedWrites: 0, oldestWaitMs: 0, callbackMaxMs: 2,
+      blocked: false, pendingCallbacks: 0, hiddenChars: 0, resyncActive: false,
+      contextLosses: 0, atlasClears: 0, scrollbackLines: 20,
+    }));
+    const stop = startPerformanceSampling();
+    try {
+      const snapshot = runtime.invoke.mock.calls[0][1].snapshot;
+      expect(snapshot.terminals[0]).toMatchObject({ sessionId: "input-probe", callbackMaxMs: 2 });
+      expect(snapshot.terminals[0]).not.toHaveProperty("blocked");
+      expect(snapshot.terminals[0]).not.toHaveProperty("pendingCallbacks");
+    } finally { stop(); remove(); }
+  });
   it("recovers after a transient sampling failure instead of staying in flight forever", async () => {
     vi.useFakeTimers(); runtime.invoke.mockResolvedValue(undefined);
     const query = vi.spyOn(document, "querySelectorAll").mockImplementationOnce(() => { throw new Error("temporary DOM failure"); });

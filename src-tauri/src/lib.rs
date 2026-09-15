@@ -205,6 +205,7 @@ use commands::{
     get_task_binding,
     get_terminal_adoption_snapshot,
     get_terminal_daemon_client_info,
+    get_terminal_flow_diagnostics,
     get_terminal_output,
     get_terminal_recent_output,
     get_terminal_recovery_snapshot,
@@ -1998,8 +1999,10 @@ pub fn run() {
                 use tauri_plugin_deep_link::DeepLinkExt;
                 // dev 构建注册 ccpanes-dev（release 由安装包声明的 ccpanes 生效）。
                 #[cfg(debug_assertions)]
-                if let Err(e) = app.deep_link().register("ccpanes-dev") {
-                    log::warn!("[import] register ccpanes-dev scheme failed: {e}");
+                if app.config().identifier == "com.ccpanes.dev" {
+                    if let Err(e) = app.deep_link().register("ccpanes-dev") {
+                        log::warn!("[import] register ccpanes-dev scheme failed: {e}");
+                    }
                 }
                 let handle = app.handle().clone();
                 app.deep_link().on_open_url(move |event| {
@@ -2944,6 +2947,7 @@ pub fn run() {
             run_terminal_path_link_action,
             set_hidden_terminal_sessions,
             ack_terminal_output,
+            get_terminal_flow_diagnostics,
             get_terminal_recovery_snapshot,
             upload_terminal_checkpoint,
             record_terminal_input,

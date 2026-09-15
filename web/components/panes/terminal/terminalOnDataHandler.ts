@@ -42,13 +42,15 @@ export function createTerminalOnDataHandler({
 }: TerminalOnDataHandlerDeps): (data: string) => void {
   return (data: string) => {
     const traceId = ++inputTraceSeqRef.current;
-    debugLog("input.xterm.onData", {
-      traceId,
-      data: summarizeTerminalInputData(data),
-      disconnected: isDisconnectedRef.current,
-      hasSession: Boolean(currentSessionIdRef.current),
-      focusReportMode: focusReportModeRef.current,
-    });
+    if (inputTraceRef.current?.enabled) {
+      debugLog("input.xterm.onData", {
+        traceId,
+        data: summarizeTerminalInputData(data),
+        disconnected: isDisconnectedRef.current,
+        hasSession: Boolean(currentSessionIdRef.current),
+        focusReportMode: focusReportModeRef.current,
+      });
+    }
     domInputFallbackRef.current?.recordXtermData(data);
     inputTraceRef.current?.onData(data);
     if (isXtermFocusReportInput(data) && !focusReportModeRef.current) {
@@ -70,7 +72,9 @@ export function createTerminalOnDataHandler({
     if (sessionId && !readOnlyRef.current) {
       // 写入失败必须让用户看见。会话被另一个实例持有时 daemon 会挡下输入，
       // 以前这里是 fire-and-forget，rejection 无人接管 = 打字石沉大海。
-      terminalService.write(sessionId, data, { traceId }).catch((error) => {
+      terminalService.write(sessionId, data, {
+        traceId,
+      }).catch((error) => {
         if (isSessionClaimedError(error)) {
           notifySessionClaimed(sessionId, t("sessionClaimedByOtherInstance"));
           return;
