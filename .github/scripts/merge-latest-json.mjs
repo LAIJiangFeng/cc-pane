@@ -60,6 +60,10 @@ const releaseAssets = new Set(
 const platforms = {};
 const missingAssets = [];
 for (const entry of entries) {
+  if (typeof entry.signature !== "string" || !entry.signature.trim()) {
+    console.error(`missing updater signature for ${entry.asset}`);
+    process.exit(1);
+  }
   if (!releaseAssets.has(entry.asset)) {
     missingAssets.push(entry.asset);
     continue;
@@ -79,13 +83,10 @@ if (missingAssets.length > 0) {
   process.exit(1);
 }
 
-for (const key of EXPECTED_KEYS) {
-  if (!platforms[key]) {
-    // 缺平台仍照常发布（已构建平台的用户不陪葬），但必须在 run 页面可见
-    console.log(
-      `::warning::latest.json is missing platform ${key} — users on that platform will not auto-update to ${tag}`,
-    );
-  }
+const missingPlatforms = EXPECTED_KEYS.filter(key => !platforms[key]);
+if (missingPlatforms.length > 0) {
+  console.error(`incomplete release: missing updater platforms ${missingPlatforms.join(", ")}`);
+  process.exit(1);
 }
 
 const latest = {

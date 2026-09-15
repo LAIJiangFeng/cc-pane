@@ -2,7 +2,7 @@
 <html><head><meta charset="utf-8"><title>Terminal static recovery regression</title>
 <style>
   body { margin: 16px; background: #17212e; }
-  #host { position: relative; width: 760px; height: 400px; overflow: hidden; }
+  #host { position: relative; width: 760px; height: 780px; overflow: hidden; }
   #host > .xterm { height: 100%; }
 </style></head><body><div id="host"></div>
 <script type="module">
@@ -18,7 +18,7 @@ window.prepare = async (renderer, followBottom) => {
   window.term?.dispose();
   host.replaceChildren();
   window.uploads = [];
-  const term = window.term = new Terminal({ cols: 80, rows: 20, scrollback: 4000,
+  const term = window.term = new Terminal({ cols: 80, rows: 40, scrollback: 4000,
     fontFamily: 'monospace', fontSize: 14, cursorBlink: false, allowProposedApi: true,
     theme: { background: '#17212e', foreground: '#edf4ff' } });
   const serializer = new SerializeAddon();
@@ -26,7 +26,21 @@ window.prepare = async (renderer, followBottom) => {
   term.open(host);
   if (renderer === 'webgl') term.loadAddon(new WebglAddon());
   const write = data => new Promise(resolve => term.write(data, resolve));
-  await write(Array.from({ length: 200 }, (_, i) => `\x1b[36mline ${String(i).padStart(3, '0')}\x1b[0m 稳定的历史内容\r\n`).join(''));
+  const samples = [
+    'BOX DRAWING ' + Array.from({length: 64}, (_, i) => String.fromCharCode(0x2500 + i)).join(''),
+    'BOX DRAWING ' + Array.from({length: 64}, (_, i) => String.fromCharCode(0x2540 + i)).join(''),
+    'BLOCK/SHADE/QUADRANT ' + Array.from({length: 32}, (_, i) => String.fromCharCode(0x2580 + i)).join(''),
+    'POWERLINE \ue0b0 \ue0b1 \ue0b2 \ue0b3  branch main',
+    'CJK ruler: |中文|测试|对齐|恢复|',
+    'ASCII:     |1234|5678|9012|3456|',
+    ...Array.from({length: 16}, (_, row) => Array.from({length: 16}, (_, col) =>
+      `\x1b[48;5;${row * 16 + col}m  `).join('') + '\x1b[0m'),
+    Array.from({length: 32}, (_, i) => `\x1b[48;2;${i * 8};${255 - i * 8};128m  `).join('') + '\x1b[0m TRUECOLOR',
+  ].join('\r\n') + '\r\n';
+  await write(Array.from({ length: 20 }, (_, i) => `line ${i}\r\n`).join(''));
+  await write(samples);
+  await write(Array.from({ length: 150 }, (_, i) => `\x1b[36mline ${String(i).padStart(3, '0')}\x1b[0m 稳定的历史内容\r\n`).join(''));
+  await write(samples);
   await write('\x1b[?25l');
   const saved = serializer.serialize();
   if (!followBottom) term.scrollToLine(20);
@@ -43,7 +57,7 @@ window.prepare = async (renderer, followBottom) => {
       term, sessionId: `${renderer}-${followBottom}`, reason: 'browser-regression',
       getRecoverySnapshot: async () => ({
         checkpoint: { checkpointEpoch: "7", anchorSeq: 100, snapshotAnsi: saved,
-          bufferMode: 'normal', cols: 80, rows: 20, checkpointedAtMs: 1 },
+          bufferMode: 'normal', cols: 80, rows: 40, checkpointedAtMs: 1 },
         delta: raw, bufferMode: 'normal', endSeq: raw.length + 100, checkpointEpoch: "7",
       }),
       writeCheckpointData: write,

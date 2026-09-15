@@ -1426,7 +1426,7 @@ pub struct OrchestratorInfo {
 /// 无关本地进程回收；裸 connect 会误判可达，进而把真实 token 注入陌生进程。
 /// 这里改为对 `/api/health` 发一个最小 HTTP 请求，校验返回体是本 orchestrator 独有的
 /// `{"status":"ok"}`——陌生监听者不会实现该路由与该载荷，从而杜绝 token 外泄。
-fn local_orchestrator_endpoint_reachable(port: u16) -> bool {
+fn local_orchestrator_endpoint_reachable(port: u16, data_dir: &std::path::Path) -> bool {
     use std::io::{Read, Write};
 
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
@@ -1459,12 +1459,14 @@ fn local_orchestrator_endpoint_reachable(port: u16) -> bool {
     }
 
     let text = String::from_utf8_lossy(&response);
-    let status_ok = text
-        .lines()
-        .next()
-        .map(|line| line.contains("200"))
-        .unwrap_or(false);
-    status_ok && text.contains("\"status\"") && text.contains("\"ok\"")
+    let manifest =
+        std::fs::read_to_string(data_dir.join(orchestrator_manifest::ORCHESTRATOR_MANIFEST_FILE))
+            .ok()
+            .filter(|content| {
+                orchestrator_manifest::parse_endpoint(content).is_some_and(|(p, _)| p == port)
+            })
+            .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok());
+    orchestrator_manifest::health_matches_manifest(&text, manifest.as_ref())
 }
 
 struct DeadBufferEntry {
@@ -5636,7 +5638,7 @@ impl TerminalService {
     }
 
     fn healthy_orchestrator_info(&self) -> Option<OrchestratorInfo> {
-        let manifest_info = orchestrator_manifest::read_endpoint(self.app_paths.data_dir())
+        let manifest_info = orchestrator_manifest::read_active_endpoint(self.app_paths.data_dir())
             .map(|(port, token)| OrchestratorInfo { port, token });
         let cached_info = self.orchestrator_info.lock().ok().and_then(|g| g.clone());
         let mut candidates = Vec::with_capacity(2);
@@ -5653,7 +5655,7 @@ impl TerminalService {
         }
 
         for (source, info) in candidates {
-            if local_orchestrator_endpoint_reachable(info.port) {
+            if local_orchestrator_endpoint_reachable(info.port, self.app_paths.data_dir()) {
                 if let Ok(mut guard) = self.orchestrator_info.lock() {
                     *guard = Some(info.clone());
                 }

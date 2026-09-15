@@ -39,7 +39,7 @@ try {
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   browser = await chromium.launch({ headless: true, channel: process.argv[3] || process.env.CCPANES_BROWSER_CHANNEL || undefined });
-  const page = await browser.newPage({ viewport: { width: 850, height: 500 } });
+  const page = await browser.newPage({ viewport: { width: 850, height: 850 } });
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
   await page.goto(`http://127.0.0.1:${address.port}/`);
