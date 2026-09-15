@@ -70,6 +70,7 @@ export default function AppShell({ onOpenTerminal, recentFilesOpen, onCloseRecen
           theme={isDark ? "dark" : "light"}
           richColors
         />
+        {/* MCP 编排器故障走右下通知中心，此组件只负责发通知、不占通栏。 */}
         <OrchestratorAlertBanner />
         <RestoreRegressionBanner />
 
