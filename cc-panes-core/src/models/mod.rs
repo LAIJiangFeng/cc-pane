@@ -17,6 +17,7 @@ pub mod process_info;
 mod project;
 pub mod provider;
 pub mod quick_command;
+pub mod quick_terminal_settings;
 pub mod resource_policy;
 pub mod runner;
 pub mod screenshot;
@@ -55,8 +56,10 @@ pub use drama::{
 };
 pub use external_skill::{DiscoveredExternalSkill, ExternalSkillSource};
 pub use git::{
-    GitChangeStatus, GitChangedFile, GitCommit, GitDiffSpec, GitLogPage, GitLogQuery, GitRepoInfo,
-    GitRepoState,
+    GitChangeStatus, GitChangedFile, GitCommit, GitConflictContent, GitConflictFile,
+    GitConflictStage, GitConflictStageKind, GitConflictSummary, GitConflictVersions, GitDiffSpec,
+    GitLogPage, GitLogQuery, GitMergeState, GitRepoInfo, GitRepoState, GitResolveConflictRequest,
+    GitResolveConflictResult,
 };
 pub use history::{
     // Diff 模型
@@ -106,7 +109,10 @@ pub use session_index::{
     SessionIndexScanReport, SessionIndexScope, SessionScanState,
 };
 pub use session_restore::{SavedSession, TerminalSessionProvenance};
-pub use ssh_machine::{AuthMethod, SshMachine, SshMachineConfig, SshMachineUpsertRequest};
+pub use ssh_machine::{
+    AuthMethod, SshJumpHost, SshMachine, SshMachineConfig, SshMachineUpsertRequest, SshProxyConfig,
+    SshProxyKind,
+};
 pub use system_stats::{
     KillProcessResult, ManagedSessionRoot, OrphanProcessInfo, ResourceTree, SessionProcessInfo,
     SessionResourceUsage, SystemStats, TruncatedProcessSummary,

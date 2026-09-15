@@ -117,7 +117,7 @@ describe("useNotificationStore", () => {
       const original = makeNotification({ id: "a", title: "同", body: "x" });
       useNotificationStore.getState().add(original);
       const before = useNotificationStore.getState().notifications[0];
-      useNotificationStore.getState().upsert(makeNotification({ id: "a", title: "同", body: "x" }));
+      useNotificationStore.getState().upsert(makeNotification({ id: "a", title: "同", body: "x", timestamp: original.timestamp }));
       expect(useNotificationStore.getState().notifications[0]).toBe(before);
     });
 

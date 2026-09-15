@@ -9,7 +9,7 @@ import { collectTerminalLeaves, collectTerminalSessionIdsWithSaved, collectTermi
 import { severityRank } from "@/lib/statusPresentation";
 import { resolveTerminalContextSelection } from "@/hooks/useFollowActiveTerminalContext";
 import type { Tab, Workspace } from "@/types";
-import type { TerminalStatusInfo, TerminalStatusType } from "@/types";
+import type { OscProgressBadge, TerminalStatusInfo, TerminalStatusType } from "@/types";
 
 export { severityRank } from "@/lib/statusPresentation";
 
@@ -26,6 +26,8 @@ export interface WorkspaceTerminalRow {
   status: TerminalStatusType | null;
   /** toolRunning 时的工具名（取自状态最严重的那个 leaf） */
   toolName: string | null;
+  /** OSC 9;4 进度徽章（F5），取自状态最严重的那个 leaf；null = 无信号 */
+  oscProgress: OscProgressBadge | null;
   /** 该 tab 下的活 PTY 会话数（分屏 >1 时 UI 显示 ×N） */
   sessionCount: number;
 }
@@ -33,7 +35,7 @@ export interface WorkspaceTerminalRow {
 function worstStatus(
   sessionIds: string[],
   statusMap: Map<string, TerminalStatusInfo>,
-): { status: TerminalStatusType | null; toolName: string | null } {
+): { status: TerminalStatusType | null; toolName: string | null; oscProgress: OscProgressBadge | null } {
   let best: TerminalStatusInfo | null = null;
   for (const sessionId of sessionIds) {
     const info = statusMap.get(sessionId);
@@ -45,6 +47,7 @@ function worstStatus(
   return {
     status: best?.status ?? null,
     toolName: best?.currentToolName ?? null,
+    oscProgress: best?.oscProgress ?? null,
   };
 }
 
@@ -108,7 +111,7 @@ export function deriveWorkspaceTerminals(
       if (sessionIds.length === 0) continue;
       const workspaceId = resolveWorkspaceId(tab, workspaces);
       if (!workspaceId) continue;
-      const { status, toolName } = worstStatus(sessionIds, statusMap);
+      const { status, toolName, oscProgress } = worstStatus(sessionIds, statusMap);
       const rows = grouped.get(workspaceId) ?? [];
       rows.push({
         tabId: tab.id,
@@ -117,6 +120,7 @@ export function deriveWorkspaceTerminals(
         firstPrompt: lookupFirstPrompt(tab, firstPrompts),
         status,
         toolName,
+        oscProgress,
         sessionCount: sessionIds.length,
       });
       grouped.set(workspaceId, rows);

@@ -137,6 +137,11 @@ Frontend imports use the `@/` alias, which resolves to `web/`.
 
 ### Development
 
+**Lock file 与 CI 同步（必读）**：CI 用 Node 20（npm 10）跑 `npm ci`。npm 11 生成/重写
+`package-lock.json` 时会丢掉 `@docsearch/js` 嵌套的 react@18 子树（peer 约束
+`< 19.0.0`），导致 CI 全矩阵 `npm ci` EUSAGE 失败。加减依赖后务必用
+`npx npm@10 install` 重新生成 lock 并提交。
+
 ```bash
 # Install frontend dependencies
 npm install

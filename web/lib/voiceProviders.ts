@@ -18,7 +18,10 @@ export interface VoiceProviderCapability {
   apiKeyField: "dashscopeApiKey" | "mimoApiKey" | "customApiKey";
   /** custom 为 false：本地 whisper.cpp server 等无鉴权服务允许留空 */
   apiKeyRequired: boolean;
-  apiKeyPlaceholder: string;
+  /** 无本地化需求时的纯技术占位符（如 "sk-..."） */
+  apiKeyPlaceholder?: string;
+  /** 有需本地化文案时的 i18n key（设置命名空间，优先于 apiKeyPlaceholder） */
+  apiKeyPlaceholderKey?: "voiceApiKeyPlaceholderHint";
   apiKeyLabelKey: "voiceDashscopeApiKey" | "voiceMimoApiKey" | "voiceCustomApiKey";
   baseUrlField: "mimoBaseUrl" | "customBaseUrl" | null;
   baseUrlLabelKey?: "voiceMimoBaseUrl" | "voiceCustomBaseUrl";
@@ -72,7 +75,7 @@ export const VOICE_PROVIDERS: Record<VoiceProviderId, VoiceProviderCapability> =
     labelKey: "voiceProviderCustom",
     apiKeyField: "customApiKey",
     apiKeyRequired: false,
-    apiKeyPlaceholder: "sk-... / 留空",
+    apiKeyPlaceholderKey: "voiceApiKeyPlaceholderHint",
     apiKeyLabelKey: "voiceCustomApiKey",
     baseUrlField: "customBaseUrl",
     baseUrlLabelKey: "voiceCustomBaseUrl",

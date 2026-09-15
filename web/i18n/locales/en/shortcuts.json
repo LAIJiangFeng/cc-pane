@@ -40,5 +40,9 @@
   "local-history": "Local History",
   "worktree-manager": "Worktree Manager",
   "git-timeline": "Git Timeline",
-  "session-cleaner": "Session Cleaner"
+  "session-cleaner": "Session Cleaner",
+  "commandPalettePlaceholder": "Type a command, workspace, or layout name...",
+  "commandPaletteEmpty": "No matching commands",
+  "commandGroupWorkspaces": "Workspaces",
+  "commandGroupLayouts": "Layouts"
 }

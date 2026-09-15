@@ -112,6 +112,17 @@ describe("settings registry", () => {
     }));
   });
 
+  it("registers the opt-in terminal inline image setting for search", () => {
+    const terminal = SETTINGS_PANES.find((pane) => pane.id === "terminal");
+
+    expect(terminal?.searchEntries).toContainEqual(expect.objectContaining({
+      id: "inline-images",
+      titleKey: "inlineImagesEnabled",
+      keywordsKey: "searchKeywords.inlineImages",
+      targetSectionId: "terminal-inline-images",
+    }));
+  });
+
   it("registers independent color and shape search targets", () => {
     const theme = SETTINGS_PANES.find((pane) => pane.id === "theme");
     const shape = SETTINGS_PANES.find((pane) => pane.id === "theme-shape");

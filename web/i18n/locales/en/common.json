@@ -31,7 +31,7 @@
   "errorLogFailed": "Failed to write the crash log. After restarting, open Settings > About > Open Log Directory and attach the latest cc-panes*.log to a GitHub Issue.",
   "errorRetryUnavailable": "The page origin is unreachable right now (the dev server may be down), so the error page was kept instead of reloading into a blank window. Retry once the service is back.",
   "browse": "Browse",
-  "default": "Default",
+  "default": "default",
   "pin": "Pin",
   "unpin": "Unpin",
   "show": "Show",
@@ -133,5 +133,19 @@
   "resourceSortGroup": "Group by workspace",
   "resourceSortCpu": "Highest CPU first",
   "resourceSortMemory": "Highest memory first",
-  "resourceTopUsage": "Top usage"
+  "resourceTopUsage": "Top usage",
+  "relativeTime": {
+    "justNow": "just now",
+    "minutesAgo": "{{count}}m ago",
+    "hoursAgo": "{{count}}h ago",
+    "daysAgo": "{{count}}d ago"
+  },
+  "layout": "Layout",
+  "webAuth": {
+    "lockedTitle": "CC-Panes Web is locked",
+    "usernamePlaceholder": "Username",
+    "passwordPlaceholder": "Password",
+    "submitting": "Signing in...",
+    "unlock": "Unlock"
+  }
 }

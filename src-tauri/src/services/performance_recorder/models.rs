@@ -154,8 +154,10 @@ mod tests {
     use super::*;
     #[test]
     fn rejects_unbounded_or_content_bearing_input() {
-        let mut sample = FrontendSnapshot::default();
-        sample.terminals = vec![TerminalMetric::default(); 33];
+        let mut sample = FrontendSnapshot {
+            terminals: vec![TerminalMetric::default(); 33],
+            ..Default::default()
+        };
         assert!(sample.validate().is_err());
         sample.terminals = vec![TerminalMetric {
             session_id: Some("Bearer secret".into()),

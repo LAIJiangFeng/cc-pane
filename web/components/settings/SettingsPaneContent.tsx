@@ -19,6 +19,7 @@ const NotificationSection = lazyWithRetry(() => import("./NotificationSection"),
 const ProviderSection = lazyWithRetry(() => import("./ProviderSection"), "ProviderSection");
 const ProxySection = lazyWithRetry(() => import("./ProxySection"), "ProxySection");
 const QuickCommandsSection = lazyWithRetry(() => import("./QuickCommandsSection"), "QuickCommandsSection");
+const QuickTerminalSection = lazyWithRetry(() => import("./QuickTerminalSection"), "QuickTerminalSection");
 const ScreenshotSection = lazyWithRetry(() => import("./ScreenshotSection"), "ScreenshotSection");
 const SharedMcpSection = lazyWithRetry(() => import("./SharedMcpSection"), "SharedMcpSection");
 const GlobalSkillsPanel = lazyWithRetry(() => import("@/components/resources/GlobalSkillsPanel"), "GlobalSkillsPanel");
@@ -96,6 +97,8 @@ function Pane({ paneId, draft, updateDraft, onUnsavedChangesChange }: SettingsPa
       return <AutomationsSection />;
     case "terminal":
       return <TerminalSection value={draft.terminal} onChange={(terminal) => updateDraft({ ...draft, terminal })} />;
+    case "quick-terminal":
+      return <QuickTerminalSection value={draft.quickTerminal} onChange={(quickTerminal) => updateDraft({ ...draft, quickTerminal })} />;
     case "voice":
       return <VoiceSection value={draft.voice} onChange={(voice) => updateDraft({ ...draft, voice })} />;
     case "ccchan":

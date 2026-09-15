@@ -541,6 +541,7 @@ mod unattended_responder_tests {
                 current_tool_use_id: Some("tool-1".to_string()),
                 current_tool_summary: None,
                 updated_at: 0,
+                osc_progress: None,
             }))
         }
 

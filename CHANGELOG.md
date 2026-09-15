@@ -4,9 +4,47 @@
 > file. Add the entry to both — a missing Chinese entry fails `validate-version` before any build
 > starts.
 
-## 0.12.18 - Unreleased
+## 0.12.19 - 2026-09-15
 
-Development branch after v0.12.17.
+Restore the MCP startup notification change omitted from the 0.12.18 release.
+
+### Fixed
+
+- Show MCP bind retries and startup failures as dismissible bottom-right notification cards, freeing the main area's top edge.
+- Update one card per failure episode. Dismissed retries stay dismissed through final failure; a new failure after recovery alerts again.
+- Keep status updates working under React StrictMode and refresh timestamps and unread state for repeated failure episodes.
+- Keep expandable error details and notification history after dismissal.
+
+## 0.12.18 - 2026-09-15
+
+Terminal recovery and input stability, alongside the completed quick terminal, Git conflict tools and SSH routing features.
+
+### Fixed
+
+- Replay hidden terminals at the saved grid size before fitting the current window. Protect replay geometry even before a fresh view has painted, avoiding truncated content and blank rows.
+- Keep one owner for terminal input, output and geometry queues. Settle disposed writes and reject late callbacks; display recovery does not rerun tasks.
+- Reduce duplicate layout, measurement and logging after IME commits. Refresh shared WebGL atlases only when glyph coordinates change.
+- Preserve explicit scrollback settings, drain final output before reporting the actual exit code, and retain Windows process handles for termination.
+- Retire stopped orchestrator endpoints while preserving reconnect credentials. Publish readiness only after durable endpoint registration; old processes cannot retire a replacement instance.
+- Preserve daemon sessions during installer upgrades instead of killing them through the app's process tree.
+- Complete language switching and notification focus for popped-out windows.
+- Bound SSH handshakes and keep jump relays bidirectional under backpressure, avoiding stalled route checks.
+- Preserve fresh hook status in daemon sessions when subsequent PTY output carries an OSC progress badge.
+
+### Added
+
+- Global quick terminal with retained sessions while hidden and adoption into the main window.
+- Shared shell quoting and WSL conversion for dropped/pasted paths, with explicit feedback for local paths in SSH sessions.
+- Git commit topology and a three-column conflict editor that stages resolved files.
+- Per-host SSH proxies, a single jump host and connection route previews.
+- OSC 9;4 display badges without overriding authoritative hook status.
+- Opt-in inline terminal images, ignored-file styling, and local MCP injection for pi/omp/jcode.
+
+### Validation and Compatibility
+
+- Visual fixtures cover box drawing, block characters, Powerline, CJK alignment and color gradients. Release checks require all platforms and valid updater signatures.
+- Inline images remain disabled by default and are not restored with hibernated text; Windows ConPTY uses OSC 1337.
+- Jcode history, hooks and orchestrated launch remain unavailable; pi/omp/jcode MCP injection in this release covers local terminals.
 
 ### Fixed
 

@@ -91,7 +91,8 @@ export default function NotificationInputCard({ record, onDismiss }: Notificatio
             variant="ghost"
             className="h-6 px-2 text-[11.5px]"
             onClick={() => {
-              focusNotificationSession(record.sessionId as string);
+              // 聚焦现在异步（F7.3 弹出窗口），但 dismiss 与聚焦结果无关，照旧立即执行。
+              void focusNotificationSession(record.sessionId as string);
               onDismiss(record.id);
             }}
           >

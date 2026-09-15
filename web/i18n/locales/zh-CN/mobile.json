@@ -84,5 +84,6 @@
     "sendFailed": "发送失败",
     "writeFailed": "写入终端失败",
     "shortcutLabel": "输入 {{char}}"
-  }
+  },
+  "noOpenablePath": "当前工作空间没有可打开的路径"
 }

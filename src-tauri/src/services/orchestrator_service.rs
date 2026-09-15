@@ -2285,12 +2285,6 @@ impl OrchestratorService {
                         bind_host, port
                     );
 
-                    // Async binding means the caller cannot inject this immediately after start().
-                    // Publish the actual endpoint at the point it becomes ready instead.
-                    state
-                        .local_terminal_service
-                        .set_orchestrator_info(port, token.clone());
-
                     let config = serde_json::json!({
                         "service": "cc-panes-orchestrator",
                         "pid": std::process::id(),
@@ -2308,18 +2302,33 @@ impl OrchestratorService {
                     let config_path = app_paths_for_config
                         .data_dir()
                         .join(orchestrator_manifest::ORCHESTRATOR_MANIFEST_FILE);
-                    match cc_panes_core::utils::atomic_file::write_atomic(
-                        &config_path,
-                        serde_json::to_string_pretty(&config).unwrap_or_default(),
+                    match cc_panes_core::utils::orchestrator_manifest_lifecycle::publish(
+                        app_paths_for_config.data_dir(),
+                        config,
                     ) {
                         Ok(_) => info!(
                             "[orchestrator] MCP config written to {}",
                             config_path.display()
                         ),
                         Err(error) => {
-                            error!("[orchestrator] Failed to write MCP config: {}", error)
+                            error!("[orchestrator] Failed to write MCP config: {}", error);
+                            update_orchestrator_status(
+                                &status,
+                                &app_handle_for_status,
+                                |current| {
+                                    current.mark_failed(format!(
+                                        "Orchestrator endpoint publication failed: {error}"
+                                    ))
+                                },
+                            );
+                            return;
                         }
                     }
+
+                    // Do not advertise a cached endpoint until its manifest is durable.
+                    state
+                        .local_terminal_service
+                        .set_orchestrator_info(port, token.clone());
 
                     update_orchestrator_status(&status, &app_handle_for_status, |current| {
                         current.mark_ready(port);
@@ -2343,6 +2352,15 @@ impl OrchestratorService {
                         .with_graceful_shutdown(wait_for_orchestrator_shutdown(cancel_rx.clone()))
                         .await;
                     let cancelled = *cancel_rx.borrow();
+                    if let Err(error) =
+                        cc_panes_core::utils::orchestrator_manifest_lifecycle::retire(
+                            app_paths_for_config.data_dir(),
+                            std::process::id(),
+                            started_at,
+                        )
+                    {
+                        warn!("[orchestrator] Could not retire owned endpoint: {error}");
+                    }
                     if let Err(ref error) = serve_result {
                         error!("[orchestrator] Server error: {}", error);
                     }
@@ -14291,6 +14309,7 @@ mod tests {
             current_tool_use_id: None,
             current_tool_summary: None,
             updated_at: 0,
+            osc_progress: None,
         }
     }
 
@@ -17017,6 +17036,7 @@ mod tests {
                 current_tool_use_id: None,
                 current_tool_summary: None,
                 updated_at: 0,
+                osc_progress: None,
             });
         }
 
@@ -17057,6 +17077,7 @@ mod tests {
                 current_tool_use_id: None,
                 current_tool_summary: None,
                 updated_at: 0,
+                osc_progress: None,
             });
             Ok(session_id)
         }

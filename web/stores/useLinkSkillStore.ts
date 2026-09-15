@@ -3,6 +3,7 @@
  * 中央仓库 + 多 Agent Junction/Symlink 启停 + 工作空间 + 远程更新
  */
 import { create } from "zustand";
+import i18n from "@/i18n";
 import { linkSkillService } from "@/services";
 import type {
   DisableCounts,
@@ -81,7 +82,9 @@ export const useLinkSkillStore = create<LinkSkillState>((set, get) => ({
     const out = await linkSkillService.addWorkspace(path);
     const snapshot = await linkSkillService.snapshot(null);
     set({ snapshot });
-    return out.duplicate ? "该项目已在工作空间列表中" : `已添加项目工作空间【${out.name}】`;
+    return out.duplicate
+      ? i18n.t("addWorkspaceDuplicate", { ns: "linkSkills" })
+      : i18n.t("addWorkspaceAdded", { ns: "linkSkills", name: out.name });
   },
 
   setTargetAgent: (agent) => set({ targetAgent: agent }),

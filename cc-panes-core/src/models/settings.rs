@@ -4,6 +4,7 @@ use std::collections::HashMap;
 // OrchestratorSettings 已拆到独立模块（settings.rs 触到行数棘轮上限），
 // 在此重导出以保持既有 import 路径不变。
 pub use super::orchestrator_settings::OrchestratorSettings;
+pub use super::quick_terminal_settings::QuickTerminalSettings;
 
 const DEFAULT_TERMINAL_FONT_SIZE: u16 = 15;
 const MIN_TERMINAL_FONT_SIZE: u16 = 10;
@@ -39,6 +40,8 @@ pub struct AppSettings {
     pub tips: TipsSettings,
     #[serde(default)]
     pub screenshot: ScreenshotSettings,
+    #[serde(default)]
+    pub quick_terminal: QuickTerminalSettings,
     #[serde(default)]
     pub voice: VoiceSettings,
     #[serde(default)]
@@ -152,6 +155,7 @@ impl AppSettings {
         self.web_access.merge_missing_defaults();
         self.orchestrator.merge_missing_defaults();
         self.wallpaper.merge_missing_defaults();
+        self.quick_terminal.merge_missing_defaults();
     }
 }
 
@@ -537,6 +541,12 @@ pub struct TerminalSettings {
     /// 默认 false = 分屏优先（终端聚焦也触发分屏）；true = 恢复旧版透传行为。
     #[serde(default)]
     pub split_shortcut_passthrough: bool,
+    /// 终端内联图片（OSC 1337 / iTerm inline image protocol + SIXEL，F7.4）。
+    /// 默认 false = 关闭。@xterm/addon-image 仍是 beta 质量，且每个终端默认
+    /// 持有 128MB 图片存储，多窗格场景内存放大明显；图片不会随休眠 VT 重放
+    /// 恢复。故按可逆开关落地，前端用保守内存上限懒加载，详见 docs/105 F7.4。
+    #[serde(default)]
+    pub inline_images_enabled: bool,
 }
 
 /// 孤儿会话 TTL 上限：7 天
@@ -1273,6 +1283,7 @@ impl Default for TerminalSettings {
             lower_session_priority: true,
             session_cpu_weight: None,
             split_shortcut_passthrough: false,
+            inline_images_enabled: false,
         }
     }
 }
@@ -1636,6 +1647,20 @@ mod tests {
         "#;
         let settings: TerminalSettings = toml::from_str(toml_str).expect("parse legacy config");
         assert!(settings.path_links_enabled);
+    }
+
+    #[test]
+    fn terminal_settings_without_inline_images_enabled_defaults_to_false() {
+        let toml_str = r#"
+            fontSize = 15
+            fontFamily = "monospace"
+            cursorStyle = "block"
+            cursorBlink = false
+            scrollback = 20000
+        "#;
+        let settings: TerminalSettings = toml::from_str(toml_str).expect("parse legacy config");
+        assert!(!settings.inline_images_enabled);
+        assert!(!TerminalSettings::default().inline_images_enabled);
     }
 
     #[test]

@@ -753,6 +753,8 @@ fn same_status_payload(left: &SessionStatusInfo, right: &SessionStatusInfo) -> b
         && left.current_tool_use_id == right.current_tool_use_id
         && left.current_tool_summary == right.current_tool_summary
         && left.updated_at == right.updated_at
+        // F5：OSC 徽章独立于 updated_at 变化（TTL 衰减/黏滞），漏比会被去重抑制
+        && left.osc_progress == right.osc_progress
 }
 
 fn synthesized_exited_status(session_id: &str) -> SessionStatusInfo {
@@ -774,6 +776,7 @@ fn synthesized_exited_status_with_code(
         current_tool_use_id: None,
         current_tool_summary: None,
         updated_at: now,
+        osc_progress: None,
     }
 }
 

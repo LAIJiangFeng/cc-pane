@@ -6,6 +6,7 @@ import { useActivityBarStore } from "@/stores/useActivityBarStore";
 import { useSshMachinePreferencesStore } from "@/stores/useSshMachinePreferencesStore";
 import { useSshMachinesStore } from "@/stores/useSshMachinesStore";
 import { collectPanels, findPane, generateId } from "@/lib/paneTree";
+import { defaultLayoutName, starredLayoutName } from "@/stores/paneLayoutHelpers";
 import { collectTerminalSessionIdsWithSaved } from "@/lib/paneSessions";
 import type { LayoutSnapshotPayload, PaneNode, Tab, Workspace } from "@/types";
 import {
@@ -106,14 +107,14 @@ function createIndependentScopePayload(): LayoutSnapshotPayload {
     layouts: [
       {
         id: normalId,
-        name: "布局 1",
+        name: defaultLayoutName(1),
         kind: "normal",
         rootPane: normalRoot,
         activePaneId: normalRoot.id,
       },
       {
         id: starredId,
-        name: "星标",
+        name: starredLayoutName(),
         kind: "starred",
         rootPane: starredRoot,
         activePaneId: starredRoot.id,

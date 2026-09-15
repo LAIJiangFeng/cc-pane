@@ -8,9 +8,12 @@ import { invokeIfTauri, isTauriRuntime } from "./runtime";
 export interface PopupTabData {
   tabId: string;
   paneId: string;
-  sessionId: string;
+  /** null = 前端首次挂载时自建会话（F1 快捷终端走此路径） */
+  sessionId: string | null;
   projectPath: string;
   title: string;
+  /** "quick" = F1 全局快捷终端（Quake 式下拉）；缺省 = 普通 tab 弹出窗口 */
+  mode?: "quick";
   workspaceName?: string;
   providerId?: string;
   modelId?: string;
@@ -39,6 +42,26 @@ export async function popOutTab(data: PopupTabData): Promise<void> {
 /** 检查标签是否已弹出 */
 export function isTabPoppedOut(tabId: string): boolean {
   return poppedTabs.has(tabId);
+}
+
+/**
+ * 把已弹出的 tab 所在的独立窗口唤到前台（docs/105 F7.3）。
+ *
+ * 返回 true 表示窗口确实被聚焦；false 表示窗口已不存在（关闭事件丢失、用户直接
+ * 点了系统标题栏的关闭按钮等），调用方据此自愈。Web 运行时没有多窗口，恒 false。
+ */
+export async function focusPoppedOutTab(tabId: string): Promise<boolean> {
+  const label = poppedTabs.get(tabId);
+  if (!label) return false;
+  if (!isTauriRuntime()) return false;
+  try {
+    const focused = await invokeIfTauri<boolean>("focus_popup_terminal_window", { label });
+    return focused === true;
+  } catch (err) {
+    // 聚焦失败不应该让通知点击整个炸掉：交回调用方走主窗口内定位的回退路径。
+    console.error("[popupWindowService] Failed to focus popup window:", err);
+    return false;
+  }
 }
 
 /** 标记标签已回收 */

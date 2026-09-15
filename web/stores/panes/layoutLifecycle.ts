@@ -5,14 +5,12 @@ import { collectTerminalLeaves } from "@/lib/paneSessions";
 import { inferCliTool, resolveRestoreMode } from "@/lib/terminalRestoreMode";
 import { stripInitialPrompt } from "@/lib/tabLifecycle/terminalLeafReset";
 import type { LayoutEntry, PaneNode, TerminalPaneNode } from "@/types";
-import { firstNormalLayout, isNormalLayout, isStarredLayout } from "../paneLayoutHelpers";
+import { defaultLayoutName, firstNormalLayout, isNormalLayout, isStarredLayout, starredLayoutName } from "../paneLayoutHelpers";
 import { ensureAgentChatLayout } from "./agentChatLayout";
 import { filterLayouts, findLayout } from "./layoutTraversal";
 import type { PanesDraft, PanesState } from "../panesStoreTypes";
 
-export const STARRED_LAYOUT_NAME = "星标";
-
-export function createDefaultLayout(name = "布局 1"): LayoutEntry {
+export function createDefaultLayout(name = defaultLayoutName(1)): LayoutEntry {
   const rootPane = createPanel();
   return {
     id: generateId("layout"),
@@ -27,7 +25,7 @@ export function createStarredLayout(): LayoutEntry {
   const rootPane = createPanel();
   return {
     id: generateId("layout"),
-    name: STARRED_LAYOUT_NAME,
+    name: starredLayoutName(),
     kind: "starred",
     rootPane,
     activePaneId: rootPane.id,
@@ -44,7 +42,7 @@ export function ensureStarredLayout(layouts: LayoutEntry[]): LayoutEntry[] {
 
   for (const layout of deduped) {
     if (isStarredLayout(layout)) {
-      layout.name = STARRED_LAYOUT_NAME;
+      layout.name = starredLayoutName();
     } else if (!layout.kind) {
       layout.kind = "normal";
     }
@@ -56,7 +54,7 @@ export function ensureStarredLayout(layouts: LayoutEntry[]): LayoutEntry[] {
 export function ensureStarredLayoutInDraft(state: PanesDraft): string {
   const existing = findLayout(state.layouts, isStarredLayout);
   if (existing) {
-    existing.name = STARRED_LAYOUT_NAME;
+    existing.name = starredLayoutName();
     return existing.id;
   }
   const layout = createStarredLayout();
@@ -72,7 +70,7 @@ export function projectedLayouts(
   if (layouts.length === 0) {
     return [{
       id: state.currentLayoutId || generateId("layout"),
-      name: "布局 1",
+      name: defaultLayoutName(1),
       kind: "normal",
       rootPane: state.rootPane,
       activePaneId: state.activePaneId,

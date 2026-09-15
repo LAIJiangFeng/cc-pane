@@ -33,6 +33,7 @@ function setupStore() {
   const actions = {
     loadDirectory: vi.fn().mockResolvedValue(undefined),
     loadGitStatuses: vi.fn().mockResolvedValue(undefined),
+    loadGitIgnoredPaths: vi.fn().mockResolvedValue(undefined),
     refresh: vi.fn().mockResolvedValue(undefined),
     createFile: vi.fn().mockResolvedValue(undefined),
     createDirectory: vi.fn().mockResolvedValue(undefined),
@@ -41,6 +42,7 @@ function setupStore() {
   useFileTreeStore.setState({
     trees: {},
     gitStatuses: {},
+    ignoredPaths: {},
     showHidden: false,
     ...actions,
   });

@@ -119,8 +119,18 @@ export default function TerminalStatusBar({
           <StatusIndicator
             status={statusInfo?.status ?? null}
             toolName={statusInfo?.currentToolName}
+            oscProgress={statusInfo?.oscProgress}
             size={7}
           />
+          {statusInfo?.oscProgress && statusInfo.oscProgress.state !== "indeterminate" ? (
+            <span
+              className="shrink-0 tabular-nums"
+              style={{ color: "var(--app-text-tertiary)" }}
+              data-testid="osc-progress-text"
+            >
+              {statusInfo.oscProgress.progress}%
+            </span>
+          ) : null}
           {cliLabel ? (
             <span className="shrink-0 font-medium" style={{ color: "var(--app-text-primary)" }}>
               {cliLabel}

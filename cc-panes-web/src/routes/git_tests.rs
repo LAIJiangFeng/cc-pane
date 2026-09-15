@@ -62,6 +62,7 @@ impl TerminalBackend for NoopTerminalBackend {
             current_tool_use_id: None,
             current_tool_summary: None,
             updated_at: 0,
+            osc_progress: None,
         }])
     }
 
@@ -312,6 +313,25 @@ async fn git_read_routes_match_tauri_git_commands() {
     .expect("changed files");
     assert_eq!(changed.len(), 2);
 
+    // 忽略项走独立通道：新增 .gitignore 忽略一个新文件，验证 web 路由与 tauri 命令同源。
+    // 用全新文件，避免影响上面已捕获的 changed/statuses 计数。
+    std::fs::write(repo.join(".gitignore"), "build.log\n").expect("write gitignore");
+    std::fs::write(repo.join("build.log"), "ignored\n").expect("write ignored file");
+    let Json(ignored) = get_git_ignored_paths(Query(PathQuery {
+        path: repo.to_string_lossy().to_string(),
+    }))
+    .await
+    .expect("ignored paths");
+    assert!(
+        ignored.iter().any(|path| {
+            std::path::Path::new(path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                == Some("build.log")
+        }),
+        "ignored paths must include build.log: {ignored:?}"
+    );
+
     let Json(diff) = get_git_diff(Json(GitDiffRequest {
         path: repo.to_string_lossy().to_string(),
         spec: cc_panes_core::models::GitDiffSpec::WorktreeVsHead {
@@ -473,6 +493,123 @@ async fn git_clone_rejects_non_http_urls_like_tauri_command() {
     };
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(message.contains("Only HTTP/HTTPS"));
+}
+
+#[tokio::test]
+async fn git_conflict_routes_list_resolve_and_stage() {
+    let (_state, root) = test_state("conflict");
+    let repo = root.join("repo");
+    init_repo(&repo);
+    let repo_path = repo.to_string_lossy().to_string();
+
+    // 制造一次内容冲突：main 与 feat 都改 README.md 同一行
+    std::fs::write(repo.join("README.md"), "base\nconflict line\n").expect("base content");
+    run_git(&repo, &["add", "README.md"]);
+    run_git(&repo, &["commit", "-m", "base line"]);
+    run_git(&repo, &["checkout", "-b", "feat"]);
+    std::fs::write(repo.join("README.md"), "base\nfeat side\n").expect("feat content");
+    run_git(&repo, &["commit", "-am", "feat side"]);
+    run_git(&repo, &["checkout", "-"]);
+    std::fs::write(repo.join("README.md"), "base\nmain side\n").expect("main content");
+    run_git(&repo, &["commit", "-am", "main side"]);
+    // merge 冲突时 git 退出码非 0，run_git 会 assert 失败，这里手动执行
+    let merge = Command::new("git")
+        .args(["merge", "feat"])
+        .current_dir(&repo)
+        .output()
+        .expect("run merge");
+    assert!(!merge.status.success(), "merge must conflict");
+
+    let Json(summary) = get_git_conflicts(Query(PathQuery {
+        path: repo_path.clone(),
+    }))
+    .await
+    .expect("conflicts");
+    assert_eq!(
+        summary.merge_state,
+        cc_panes_core::models::GitMergeState::Merging
+    );
+    assert!(summary.has_conflicts);
+    assert_eq!(summary.files.len(), 1);
+    assert_eq!(summary.files[0].path, "README.md");
+    assert!(!summary.files[0].is_binary);
+    // merge 冲突有 base/ours/theirs 三个 stage
+    let stages: Vec<u8> = summary.files[0].stages.iter().map(|s| s.stage).collect();
+    assert_eq!(stages, vec![1, 2, 3]);
+    assert!(summary.theirs_ref.is_some(), "MERGE_HEAD ref must resolve");
+
+    let Json(versions) = get_git_conflict_versions(Query(GitConflictVersionsQuery {
+        path: repo_path.clone(),
+        file: "README.md".to_string(),
+    }))
+    .await
+    .expect("versions");
+    assert_eq!(
+        versions.base.content.as_deref(),
+        Some("base\nconflict line\n")
+    );
+    assert_eq!(versions.ours.content.as_deref(), Some("base\nmain side\n"));
+    assert_eq!(
+        versions.theirs.content.as_deref(),
+        Some("base\nfeat side\n")
+    );
+    // 工作区含冲突标记
+    assert!(versions.result.content.unwrap().contains("<<<<<<<"));
+
+    // 写回解决结果并暂存
+    let Json(resolved) =
+        resolve_git_conflict(Json(cc_panes_core::models::GitResolveConflictRequest {
+            path: repo_path.clone(),
+            file: "README.md".to_string(),
+            content: "base\nresolved\n".to_string(),
+        }))
+        .await
+        .expect("resolve");
+    assert!(resolved.staged);
+    assert_eq!(resolved.remaining_conflicts, 0);
+    assert_eq!(
+        std::fs::read_to_string(repo.join("README.md")).expect("read resolved"),
+        "base\nresolved\n"
+    );
+    // git status 应显示已暂存（M 在第一列），且不再有 unmerged
+    let status = Command::new("git")
+        .args(["status", "--porcelain=v1", "--", "README.md"])
+        .current_dir(&repo)
+        .output()
+        .expect("status");
+    let status_text = String::from_utf8_lossy(&status.stdout);
+    assert_eq!(
+        status_text.trim(),
+        "M  README.md",
+        "must be staged: {status_text}"
+    );
+
+    let Json(after) = get_git_conflicts(Query(PathQuery { path: repo_path }))
+        .await
+        .expect("conflicts after resolve");
+    assert!(!after.has_conflicts);
+    assert!(after.files.is_empty());
+}
+
+#[tokio::test]
+async fn git_conflict_versions_rejects_path_traversal() {
+    let (_state, root) = test_state("conflict-traversal");
+    let repo = root.join("repo");
+    init_repo(&repo);
+
+    let result = get_git_conflict_versions(Query(GitConflictVersionsQuery {
+        path: repo.to_string_lossy().to_string(),
+        file: "../escape.txt".to_string(),
+    }))
+    .await;
+    let Err((status, message)) = result else {
+        panic!("path traversal must be rejected");
+    };
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        message.contains("safe repository-relative path"),
+        "{message}"
+    );
 }
 
 #[tokio::test]

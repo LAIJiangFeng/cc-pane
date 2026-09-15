@@ -43,5 +43,7 @@
   "linkAlreadyState": "already in this state",
   "linkSectionTitle": "Central repo link management",
   "linkSectionDesc": "Skill originals live once in a central repo; enabling creates links in each agent dir. Supports workspaces and remote updates.",
-  "operationFailed": "Operation failed: {{error}}"
+  "operationFailed": "Operation failed: {{error}}",
+  "addWorkspaceDuplicate": "This project is already in the workspace list",
+  "addWorkspaceAdded": "Added project workspace \"{{name}}\""
 }

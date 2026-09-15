@@ -14,6 +14,7 @@ export interface AppSettings {
   update: UpdateSettings;
   tips: TipsSettings;
   screenshot: ScreenshotSettings;
+  quickTerminal: QuickTerminalSettings;
   voice: VoiceSettings;
   cliLaunchers: CliLauncherSettings;
   layoutSwitcher: LayoutSwitcherSettings;
@@ -34,6 +35,19 @@ export interface ExperimentalSettings {
 }
 
 export type ExperimentalFeatureId = keyof ExperimentalSettings;
+
+/** F1 全局快捷终端设置（镜像 cc-panes-core QuickTerminalSettings）。
+ * Quake 式下拉终端：全局热键 toggle，单例置顶窗口，hide 不销毁（PTY 保留）。 */
+export interface QuickTerminalSettings {
+  /** 是否启用全局热键 toggle 快捷终端 */
+  enabled: boolean;
+  /** 全局热键（如 "Ctrl+Alt+Q"；dev 默认 "Ctrl+Alt+Shift+Q" 避免与 release 冲突） */
+  shortcut: string;
+  /** 窗口失焦时自动收起 */
+  autoHideOnBlur: boolean;
+  /** 窗口高度占主显示器高度比例（clamp [0.15, 0.85]） */
+  heightFraction: number;
+}
 
 /** IM 外推渠道类型（镜像 cc-notify ChannelType） */
 export type ImChannelType =
@@ -85,66 +99,9 @@ export interface LocalHistorySettings {
   enabled: boolean;
 }
 
-/** 壁纸种类 / 铺放方式 / 视频省电策略 */
-export type WallpaperKind = "none" | "image" | "video";
-export type WallpaperFit = "cover" | "contain" | "tile" | "center";
-export type WallpaperPowerSaver = "auto" | "always" | "never";
-
-/** 主区壁纸设置（镜像 cc-panes-core WallpaperSettings） */
-export interface WallpaperSettings {
-  enabled: boolean;
-  kind: WallpaperKind;
-  /** wallpapers_dir 下的相对文件名（受控 uuid 文件名） */
-  file: string | null;
-  fit: WallpaperFit;
-  /** 媒体层不透明度 0.1..1 */
-  opacity: number;
-  /** 高斯模糊 px 0..64 */
-  blur: number;
-  /** 压暗遮罩 0..0.9 */
-  dim: number;
-  /** 终端背景不透明度 0..1（1 = 不透明走原路径；0 = 全透明，字直接浮在壁纸上） */
-  terminalOpacity: number;
-  /**
-   * 面板玻璃模糊 px 0..24。壁纸激活时面板背景变透明，面板自身的
-   * backdrop-filter 会直接糊在壁纸上（视频会被糊没），此值接管该 token。
-   * 默认 0 = 壁纸之上不叠玻璃模糊。
-   */
-  glassBlur: number;
-  video: WallpaperVideoSettings;
-  music: WallpaperMusicSettings;
-}
-
-export interface WallpaperVideoSettings {
-  autoplay: boolean;
-  /** 0.25..2 */
-  playbackRate: number;
-  pauseWhenUnfocused: boolean;
-  powerSaver: WallpaperPowerSaver;
-}
-
-export interface WallpaperMusicSettings {
-  enabled: boolean;
-  file: string | null;
-  /** 0..1 */
-  volume: number;
-  loopPlayback: boolean;
-  autoplay: boolean;
-  /** 失焦是否暂停：独立于 video.pauseWhenUnfocused，默认 false（BGM 属全局氛围） */
-  pauseWhenUnfocused: boolean;
-  /**
-   * 用视频壁纸自带的音轨当 BGM（仅 kind=video 有意义），忽略 `file`。
-   * 走独立 audio 喂同一文件，video 保持 muted——见 Rust 侧同名字段注释。
-   */
-  useVideoAudio: boolean;
-}
-
-/** 壁纸库文件（list_wallpapers 返回项） */
-export interface WallpaperFileInfo {
-  name: string;
-  kind: "image" | "video" | "audio";
-  sizeBytes: number;
-}
+/** 壁纸类型已抽到 ./wallpaper 以遵守行数棘轮；本地仍引用 WallpaperSettings 供 AppSettings 用。 */
+export * from "./wallpaper";
+import type { WallpaperSettings } from "./wallpaper";
 
 /** 代理设置 */
 export interface ProxySettings {
@@ -214,6 +171,12 @@ export interface TerminalSettings {
   sessionCpuWeight: number | null;
   /** 分屏快捷键（Ctrl+\ / Ctrl+-）在终端聚焦时放行给终端（如 SIGQUIT）。默认 false = 分屏优先 */
   splitShortcutPassthrough: boolean;
+  /**
+   * 终端内联图片（OSC 1337 / iTerm inline image protocol + SIXEL，F7.4）。
+   * 默认 false：@xterm/addon-image 为 beta 质量且每终端默认持有 128MB 图片存储，
+   * 多窗格内存放大明显；图片不随休眠 VT 重放恢复。开启后前端用保守上限懒加载。
+   */
+  inlineImagesEnabled: boolean;
 }
 
 /** Shell 信息 */
@@ -478,6 +441,19 @@ export function isBusyStatus(status: TerminalStatusType | null | undefined): boo
   return status != null && BUSY_STATUSES.has(status);
 }
 
+/** OSC 9;4（ConEmu 进度协议）子状态，对应后端 `OscProgressState`（camelCase 序列化）。 */
+export type OscProgressState = "running" | "paused" | "error" | "indeterminate";
+
+/**
+ * OSC 9;4 兜底徽章载荷（F5）。**独立于 `status`**：status 是 hook 权威的会话
+ * 状态机，本字段只驱动徽章动画叠加层，绝不参与状态判定（hook 优先）。
+ */
+export interface OscProgressBadge {
+  state: OscProgressState;
+  /** 0-100 百分比；indeterminate/paused/error 下可能无意义（CLI 可省略）。 */
+  progress: number;
+}
+
 /** 终端状态信息 */
 export interface TerminalStatusInfo {
   sessionId: string;
@@ -489,4 +465,6 @@ export interface TerminalStatusInfo {
   currentToolUseId?: string;
   currentToolSummary?: string;
   updatedAt: number;
+  /** OSC 9;4 进度徽章；undefined/null = 无信号（已清除或 TTL 衰减）。 */
+  oscProgress?: OscProgressBadge | null;
 }

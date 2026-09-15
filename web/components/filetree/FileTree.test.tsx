@@ -85,11 +85,13 @@ function setupStores(overrides: Record<string, unknown> = {}) {
     loadDirectory: vi.fn().mockResolvedValue(undefined),
     toggleExpand: vi.fn().mockResolvedValue(undefined),
     loadGitStatuses: vi.fn().mockResolvedValue(undefined),
+    loadGitIgnoredPaths: vi.fn().mockResolvedValue(undefined),
     setSelectedFilePath: vi.fn(),
   };
   useFileTreeStore.setState({
     trees: { [ROOT]: sampleTree() },
     gitStatuses: {},
+    ignoredPaths: {},
     selectedFilePath: null,
     ...actions,
     ...overrides,
@@ -189,6 +191,39 @@ describe("FileTree", () => {
     const otherRow = screen.getByText("other.ts").closest("div[data-file-path]") as HTMLElement;
     expect(srcRow.querySelector('span[title="modified"]')).toHaveTextContent("M");
     expect(otherRow.querySelector('span[title="untracked"]')).toHaveTextContent("U");
+  });
+
+  it("loads git-ignored paths alongside statuses on mount", () => {
+    const actions = setupStores();
+    render(<FileTree rootPath={ROOT} />);
+    expect(actions.loadGitStatuses).toHaveBeenCalledWith(ROOT);
+    expect(actions.loadGitIgnoredPaths).toHaveBeenCalledWith(ROOT);
+  });
+
+  it("marks a git-ignored file with italic styling and data-ignored", () => {
+    setupStores({ ignoredPaths: { [ROOT]: [`${ROOT}/README.md`] } });
+    render(<FileTree rootPath={ROOT} />);
+    const row = screen.getByText("README.md").closest("div[data-file-path]") as HTMLElement;
+    expect(row).toHaveAttribute("data-ignored", "true");
+    expect(screen.getByText("README.md")).toHaveClass("italic");
+    // 未忽略的兄弟文件不带斜体
+    const otherRow = screen.getByText("other.ts").closest("div[data-file-path]") as HTMLElement;
+    expect(otherRow).not.toHaveAttribute("data-ignored");
+    expect(screen.getByText("other.ts")).not.toHaveClass("italic");
+  });
+
+  it("inherits the ignored style for descendants of an ignored directory", () => {
+    // git --ignored=matching 只上报目录本身，子节点须继承忽略态
+    setupStores({ ignoredPaths: { [ROOT]: [`${ROOT}/src`] } });
+    render(<FileTree rootPath={ROOT} />);
+    for (const name of ["src", "deep", "file.ts", "other.ts"]) {
+      const row = screen.getByText(name).closest("div[data-file-path]") as HTMLElement;
+      expect(row).toHaveAttribute("data-ignored", "true");
+      expect(screen.getByText(name)).toHaveClass("italic");
+    }
+    // 根目录与忽略目录之外的文件不受影响
+    const readmeRow = screen.getByText("README.md").closest("div[data-file-path]") as HTMLElement;
+    expect(readmeRow).not.toHaveAttribute("data-ignored");
   });
 
   it("syncs selection when the active pane switches to an editor tab", async () => {

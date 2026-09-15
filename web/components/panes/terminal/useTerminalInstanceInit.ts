@@ -41,13 +41,12 @@ import type { attachTerminalImeGuard } from "../terminalImeGuard";
 import type { CliTool, TerminalRendererMode } from "@/types";
 import type { RestoreLaunchState } from "../terminalRestoreQueue";
 import { registerTerminalParserHandlers } from "./terminalParserHandlers";
-import { createTerminalPasteHandlers } from "./terminalPaste";
-import { attachTerminalTextareaIntegration } from "./terminalTextareaIntegration";
-import { attachTerminalDragDropListener } from "./terminalDragDrop";
-import { createTerminalCustomKeyHandler } from "./terminalCustomKeyHandler";
+import { attachTerminalInputIntegration } from "./terminalInputIntegration";
+import { attachTerminalImageAddon } from "./terminalImageAddon";
 import { createTerminalOnDataHandler } from "./terminalOnDataHandler";
 import { createTerminalResizeObserver } from "./terminalResizeObserver";
 import { launchOrAttachTerminalSession } from "./terminalSessionLaunch";
+import { MINIMUM_TERMINAL_CONTRAST_RATIO } from "../terminalContrast";
 import type { TerminalViewProps } from "./terminalViewTypes";
 
 const IS_WINDOWS = typeof navigator !== "undefined" && navigator.platform.startsWith("Win");
@@ -285,7 +284,10 @@ export function useTerminalInstanceInit({
         cursorStyle,
         fastScrollSensitivity: 5,
         fontSize,
-        minimumContrastRatio: 4.5,
+        // F7.1：xterm 按背景动态把跌破阈值的文字色推离背景，达标颜色保持原样——
+        // 浅色主题下大量 ANSI 色（亮黄/亮青/亮白等）本就不可读，全靠此项兜底。
+        // 阈值真源在 terminalContrast.ts，配套审计单测防止被调低或误删。
+        minimumContrastRatio: MINIMUM_TERMINAL_CONTRAST_RATIO,
         rescaleOverlappingGlyphs: true,
         smoothScrollDuration: 0,
         scrollback,
@@ -379,46 +381,36 @@ export function useTerminalInstanceInit({
       });
       rendererControllerRef.current.configure(terminalRendererModeRef.current);
 
-      const { pasteTextIntoTerminal, pasteTerminalPayload } = createTerminalPasteHandlers({
+      // F7.4：内联图片（OSC 1337 / SIXEL）按开关懒加载，默认关闭。
+      // fire-and-forget：取回 ~700KB chunk 不阻塞终端启动；落定时若已卸载则不附着
+      // （见 terminalImageAddon.ts）。addon 随 term.dispose() 一并销毁，无需另起 ref。
+      if (useSettingsStore.getState().settings?.terminal.inlineImagesEnabled) {
+        void attachTerminalImageAddon({ term, isMounted: () => isMounted, debugLog });
+      }
+
+      // 输入装配（粘贴 / 文本域+原生菜单 / 拖放 / 自定义键）集中到独立模块，
+      // 共享 runtimeKind 与 SSH 宿主路径的诚实提示回调（F2）。
+      attachTerminalInputIntegration({
+        props,
+        t,
         term,
         debugLog,
-        lastShortcutPasteAtRef,
-      });
-
-      pasteRequestRef.current = () => pasteTerminalPayload(null);
-
-      nativeMenuCleanupRef.current = attachTerminalTextareaIntegration({
-        term,
-        host: terminalRef.current,
-        debugLog,
-        pasteTerminalPayload,
-        currentSessionIdRef,
-        readOnlyRef,
-        isDisconnectedRef,
-        inputTraceSeqRef,
+        getHost: () => terminalRef.current,
+        isMounted: () => isMounted,
         pasteHandlerRef,
+        pasteRequestRef,
+        nativeMenuCleanupRef,
         inputDebugCleanupRef,
+        inputTraceSeqRef,
+        lastShortcutPasteAtRef,
+        dragDropUnlistenRef,
         inputTraceRef,
         domInputFallbackRef,
         imeGuardRef,
+        currentSessionIdRef,
+        readOnlyRef,
+        isDisconnectedRef,
       });
-
-      attachTerminalDragDropListener({
-        getHost: () => terminalRef.current,
-        isMounted: () => isMounted,
-        debugLog,
-        pasteText: pasteTextIntoTerminal,
-        setUnlisten: (unlisten) => {
-          dragDropUnlistenRef.current = unlisten;
-        },
-      });
-
-      term.attachCustomKeyEventHandler(createTerminalCustomKeyHandler({
-        term,
-        getImeGuard: () => imeGuardRef.current,
-        debugLog,
-        pasteTerminalPayload,
-      }));
 
       // Fit once after the initial layout pass. Inactive/hidden tabs keep a
       // pending layout and flush it when they become visible.

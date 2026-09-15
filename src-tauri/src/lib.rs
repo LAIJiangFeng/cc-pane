@@ -107,6 +107,7 @@ use commands::{
     delete_workspace_skill,
     delete_workspace_snapshot,
     describe_skill_market_entry,
+    destroy_quick_terminal,
     detect_claude_session,
     detect_resume_session,
     detect_system_provider,
@@ -121,6 +122,7 @@ use commands::{
     exit_mini_mode,
     extract_last_prompt,
     find_task_binding_by_session,
+    focus_popup_terminal_window,
     format_memory_for_injection,
     fs_copy_entry,
     fs_create_directory,
@@ -151,8 +153,10 @@ use commands::{
     get_file_branches,
     get_git_branch,
     get_git_changed_files,
+    get_git_conflict_versions,
     get_git_diff,
     get_git_file_statuses,
+    get_git_ignored_paths,
     get_git_local_branches,
     get_git_log,
     get_git_repo_info,
@@ -184,6 +188,7 @@ use commands::{
     get_project,
     get_project_cli_hooks,
     get_provider,
+    get_quick_terminal_session,
     get_recent_changes,
     get_recent_journal,
     get_resource_stats,
@@ -226,6 +231,7 @@ use commands::{
     handle_terminal_exit_spec,
     handle_terminal_exit_spec_by_session,
     import_cc_switch_providers,
+    hide_quick_terminal,
     import_legacy_mcp_servers,
     import_notification_sound,
     import_project_skill,
@@ -278,6 +284,7 @@ use commands::{
     list_file_versions,
     list_file_versions_by_branch,
     list_git_commit_files,
+    list_git_conflicts,
     list_labels,
     list_launch_history,
     list_launch_profiles,
@@ -339,6 +346,7 @@ use commands::{
     query_task_bindings,
     query_todos,
     query_usage_stats,
+    quick_terminal_update_shortcut,
     read_acp_image_attachment,
     read_agent_transcript_cmd,
     read_bundled_skill,
@@ -371,6 +379,7 @@ use commands::{
     reorder_todos,
     reorder_workspaces,
     resize_terminal,
+    resolve_git_conflict,
     resolve_terminal_path_link,
     resolve_wallpaper_asset,
     respond_acp_permission,
@@ -435,6 +444,7 @@ use commands::{
     set_layout_notification_sound,
     set_notification_snooze,
     set_project_cli_hook_enabled,
+    set_quick_terminal_session,
     set_web_access_password,
     set_workspace_archived,
     set_workspace_project_archived,
@@ -472,6 +482,7 @@ use commands::{
     test_im_channel,
     test_proxy,
     toggle_always_on_top,
+    toggle_quick_terminal,
     toggle_todo_my_day,
     toggle_todo_subtask,
     touch_launch_by_session,
@@ -1797,6 +1808,9 @@ pub fn run() {
 
     let popup_data_store = commands::PopupDataStore::default();
     let layout_switcher_snapshot_store = commands::LayoutSwitcherSnapshotStore::default();
+    // F1.4：快捷终端当前会话 id（docs/105）。快捷终端的 tab 不在任何布局里，
+    // 主窗口靠这条登记把它接进通知定位与「在主窗口打开」接管。
+    let quick_terminal_session_store = commands::QuickTerminalSessionStore::default();
     let orchestrator_service = Arc::new(OrchestratorService::new(app_paths.as_ref()));
     // 登记簿按工作空间分目录，每个工作空间一个实例；MCP cursor_bridge 与 resume_binding
     // 都经同一个 hub 取实例，才能共用一把锁
@@ -1933,6 +1947,7 @@ pub fn run() {
         .manage(drama_service)
         .manage(popup_data_store)
         .manage(layout_switcher_snapshot_store)
+        .manage(quick_terminal_session_store)
         .manage(orchestrator_service.clone())
         .manage(cursor_bridge_hub)
         .manage(wallpaper_service)
@@ -2459,6 +2474,37 @@ pub fn run() {
                 }
             }
 
+            // ---- 注册全局快捷终端热键（docs/105 F1，全平台；注册失败只记日志不阻断启动）----
+            {
+                use tauri_plugin_global_shortcut::GlobalShortcutExt;
+                let settings_svc = app.state::<Arc<SettingsService>>();
+                let quick = settings_svc.get_settings().quick_terminal;
+                if quick.enabled && !quick.shortcut.is_empty() {
+                    if let Ok(shortcut) =
+                        quick.shortcut.parse::<tauri_plugin_global_shortcut::Shortcut>()
+                    {
+                        let app_handle = app.handle().clone();
+                        if let Err(e) =
+                            app.global_shortcut()
+                                .on_shortcut(shortcut, move |_app, _sc, event| {
+                                    if event.state
+                                        == tauri_plugin_global_shortcut::ShortcutState::Pressed
+                                    {
+                                        crate::commands::spawn_toggle_quick_terminal(&app_handle);
+                                    }
+                                })
+                        {
+                            error!(
+                                "[quick-terminal] Failed to register shortcut '{}': {}",
+                                quick.shortcut, e
+                            );
+                        }
+                    } else {
+                        error!("[quick-terminal] Invalid shortcut format: {}", quick.shortcut);
+                    }
+                }
+            }
+
             // ---- 启动 Orchestrator HTTP 服务器 ----
             {
                 let orch_svc = app.state::<Arc<OrchestratorService>>();
@@ -2822,6 +2868,11 @@ pub fn run() {
                         // 弹出窗口关闭 → 通知主窗口回收标签（不阻止关闭）
                         let label = window.label().to_string();
                         let _ = window.app_handle().emit("popup-window-closing", &label);
+                        // 快捷终端窗口关掉后「哪条会话住在快捷窗口里」这条映射就失效了
+                        // （PTY 本身仍活着）。不清会让主窗口把会话定位到一个已不存在的窗口。
+                        if label == commands::QUICK_TERMINAL_LABEL {
+                            commands::clear_quick_terminal_session(window.app_handle());
+                        }
                     }
                 }
                 #[cfg(target_os = "macos")]
@@ -2939,6 +2990,13 @@ pub fn run() {
             get_app_cwd,
             create_popup_terminal_window,
             get_popup_tab_data,
+            focus_popup_terminal_window,
+            toggle_quick_terminal,
+            hide_quick_terminal,
+            quick_terminal_update_shortcut,
+            set_quick_terminal_session,
+            get_quick_terminal_session,
+            destroy_quick_terminal,
             open_layout_switcher_window,
             close_layout_switcher_window,
             get_layout_switcher_snapshot,
@@ -2967,9 +3025,13 @@ pub fn run() {
             get_git_repo_info,
             get_git_status,
             get_git_file_statuses,
+            get_git_ignored_paths,
             get_git_local_branches,
             get_git_log,
             list_git_commit_files,
+            list_git_conflicts,
+            get_git_conflict_versions,
+            resolve_git_conflict,
             git_clone,
             git_pull,
             git_push,

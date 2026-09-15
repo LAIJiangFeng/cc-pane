@@ -122,6 +122,75 @@ impl GitService {
             .collect())
     }
 
+    /// 返回工作区中被 .gitignore 忽略的条目（绝对路径字符串）。
+    ///
+    /// 与 `get_file_statuses_compat` 同源（同样的 `RepoContext` + `repo_root.join`），
+    /// 因此前端可直接与文件树节点路径匹配。忽略项不参与"变更文件"语义，单独成通道，
+    /// 避免污染 Git 变更面板。非 git 仓库返回空列表。
+    ///
+    /// 使用 `--ignored=matching`：被忽略目录整体上报一次（不递归展开），与文件树
+    /// 懒加载/折叠语义一致；前端再据祖先关系把样式下沉到目录内子节点。
+    pub fn get_ignored_paths_compat(&self, path: &Path) -> Result<Vec<String>, String> {
+        let context = match Self::repo_context(path) {
+            Ok(context) => context,
+            Err(GitRepoState::PathNotFound | GitRepoState::NotARepo) => {
+                return Ok(Vec::new());
+            }
+            Err(_) => return Err("Failed to discover Git repository".to_string()),
+        };
+        let mut command = Command::new("git");
+        command
+            .args([
+                "-c",
+                "core.quotepath=false",
+                "status",
+                "--porcelain=v1",
+                "-z",
+                "--ignored=matching",
+                "--",
+            ])
+            .current_dir(&context.repo_root);
+        if let Some(scope) = &context.scope {
+            command.arg(scope);
+        }
+        let output = output_with_timeout(&mut command, GIT_LOCAL_TIMEOUT)
+            .map_err(|error| format!("Failed to execute git status: {error}"))?;
+        if !output.status.success() {
+            return Err(Self::git_failure("git status failed", &output));
+        }
+        Ok(Self::parse_ignored_paths_z(
+            &output.stdout,
+            &context.repo_root,
+        ))
+    }
+
+    /// 从 `git status --porcelain=v1 -z --ignored=matching` 输出中提取 `!!` 忽略项，
+    /// 拼成绝对路径字符串。容忍畸形条目（跳过而非报错）：忽略态是装饰性增强，
+    /// 不应因单个异常条目阻断文件树渲染。
+    fn parse_ignored_paths_z(bytes: &[u8], repo_root: &Path) -> Vec<String> {
+        let mut ignored = Vec::new();
+        let mut cursor = 0;
+        while cursor < bytes.len() {
+            let end = match bytes[cursor..].iter().position(|byte| *byte == 0) {
+                Some(offset) => cursor + offset,
+                None => break,
+            };
+            let entry = &bytes[cursor..end];
+            cursor = end + 1;
+            // 形如 `!! path`：两状态位 + 空格 + 路径
+            if entry.len() < 4 || entry[0] != b'!' || entry[1] != b'!' || entry[2] != b' ' {
+                continue;
+            }
+            let relative = String::from_utf8_lossy(&entry[3..]);
+            let relative = relative.trim_end_matches('/');
+            if relative.is_empty() {
+                continue;
+            }
+            ignored.push(repo_root.join(relative).to_string_lossy().to_string());
+        }
+        ignored
+    }
+
     pub fn resolve_commit(&self, path: &Path, revision: &str) -> Result<String, String> {
         if revision.trim().is_empty() {
             return Err("Git revision cannot be empty".to_string());
@@ -407,3 +476,40 @@ impl GitService {
 }
 
 mod c2;
+mod conflict;
+
+#[cfg(test)]
+mod ignored_parse_tests {
+    use super::GitService;
+    use std::path::Path;
+
+    /// NUL 分隔的 porcelain 输入 → 忽略项绝对路径，跳过非 `!!` 条目与畸形项。
+    #[test]
+    fn parse_extracts_ignored_and_skips_others() {
+        let root = Path::new("/repo");
+        // `!! build/`（目录，带尾斜杠）、`!! secret.env`（文件），外加非忽略的
+        // ` M tracked.txt`、`?? new.txt`，以及一个畸形短条目。
+        let bytes: Vec<u8> = [
+            "!! build/",
+            "!! secret.env",
+            " M tracked.txt",
+            "?? new.txt",
+            "!",
+        ]
+        .join("\0")
+        .into_bytes();
+        let mut bytes = bytes;
+        bytes.push(0);
+
+        let parsed = GitService::parse_ignored_paths_z(&bytes, root);
+        // 目录尾斜杠被裁掉，文件原样；非忽略/畸形项被跳过。
+        // 期望值与实现同源（repo_root.join），避免对平台分隔符做硬编码猜测。
+        let expect = |relative: &str| root.join(relative).to_string_lossy().to_string();
+        assert_eq!(parsed, vec![expect("build"), expect("secret.env")]);
+    }
+
+    #[test]
+    fn parse_empty_input_yields_no_paths() {
+        assert!(GitService::parse_ignored_paths_z(&[], Path::new("/repo")).is_empty());
+    }
+}

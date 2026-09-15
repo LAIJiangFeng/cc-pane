@@ -18,9 +18,11 @@ import {
   displayTitle,
   focusNotificationSession,
   formatRelativeTime,
+  handleAdoptQuickTerminal,
   jumpToNotificationTask,
   locateNotificationSession,
 } from "./notificationActions";
+import { useQuickTerminalSessionStore } from "@/stores/useQuickTerminalSessionStore";
 
 /** 正文超过此长度才出现「展开全文」；2 行 clamp 大约容纳 60 个中文字符 */
 const EXPANDABLE_BODY_LENGTH = 56;
@@ -66,14 +68,22 @@ export default function NotificationCard({
   const [expanded, setExpanded] = useState(false);
   const severity = classifyNotification(record).severity;
   const style = SEVERITY_STYLE[severity];
+  // 订阅快捷终端登记（F1.4）：定位回退读它，不订阅的话卡片挂载时算一次就定住了，
+  // 快捷窗口后开的会话永远长不出「聚焦会话」。选中 id 而非整条记录，
+  // 避免登记项换引用就重算（定位结果只依赖是否匹配这条通知的会话）。
+  const quickTerminalSessionId = useQuickTerminalSessionStore((s) => s.session?.sessionId);
   const location = useMemo(
     () => locateNotificationSession(record.sessionId),
-    [record.sessionId],
+    // quickTerminalSessionId 变化时重算：回退分支的结论取决于它。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [record.sessionId, quickTerminalSessionId],
   );
   const body = record.body?.trim();
   const expandable = Boolean(body && body.length > EXPANDABLE_BODY_LENGTH);
   const canFocusSession = Boolean(record.sessionId && location);
   const canViewTask = Boolean(record.taskBindingId);
+  // 只有住在快捷窗口的会话才给「在主窗口打开」：布局里的会话本来就在那儿。
+  const canAdoptFromQuickTerminal = location?.kind === "quickTerminal";
 
   return (
     <div
@@ -108,7 +118,9 @@ export default function NotificationCard({
         <p className="ml-[22px] mt-0.5 text-[11px] text-[var(--app-text-tertiary)]">
           {location && (
             <span className="text-[var(--app-text-secondary)]">
-              {location.layoutName} · {t("center.paneLocation", { index: location.paneIndex })}
+              {location.kind === "layout"
+                ? `${location.layoutName} · ${t("center.paneLocation", { index: location.paneIndex })}`
+                : t("center.quickTerminalLocation")}
               {" · "}
             </span>
           )}
@@ -142,7 +154,7 @@ export default function NotificationCard({
         {footer}
         <NotificationSnoozeControl sessionId={record.sessionId} />
 
-        {!hideActions && (canFocusSession || canViewTask) && (
+        {!hideActions && (canFocusSession || canViewTask || canAdoptFromQuickTerminal) && (
           <div className="ml-[22px] mt-2 flex justify-end gap-1.5">
             {canViewTask && (
               <Button
@@ -154,13 +166,29 @@ export default function NotificationCard({
                 {t("center.viewTask")}
               </Button>
             )}
+            {canAdoptFromQuickTerminal && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-6 px-2 text-[11.5px]"
+                onClick={() => {
+                  // 接管成功才 dismiss：失败时卡片要留着，用户还得再试或改走「聚焦会话」。
+                  void handleAdoptQuickTerminal(record.sessionId, t).then((adopted) => {
+                    if (adopted) onDismiss(record.id);
+                  });
+                }}
+              >
+                {t("center.adoptToMainWindow")}
+              </Button>
+            )}
             {canFocusSession && (
               <Button
                 size="sm"
                 variant="secondary"
                 className="h-6 px-2 text-[11.5px]"
                 onClick={() => {
-                  focusNotificationSession(record.sessionId as string);
+                  // 聚焦现在异步（F7.3 弹出窗口），但 dismiss 与聚焦结果无关，照旧立即执行。
+                  void focusNotificationSession(record.sessionId as string);
                   onDismiss(record.id);
                 }}
               >

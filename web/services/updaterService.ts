@@ -1,6 +1,7 @@
 import { check, type DownloadEvent, type Update } from "@tauri-apps/plugin-updater";
 import { ask, message } from "@tauri-apps/plugin-dialog";
 import { relaunch } from "@tauri-apps/plugin-process";
+import i18n from "@/i18n";
 import { getErrorMessage, handleErrorSilent } from "@/utils";
 import { hasBusySessions } from "@/lib/interruptGate";
 import { useUpdateStore } from "@/stores";
@@ -58,7 +59,10 @@ export async function checkForAppUpdates(userInitiated: boolean): Promise<void> 
     if (!update) {
       useUpdateStore.getState().clearUpdate();
       if (userInitiated) {
-        await message("当前已是最新版本。", { title: "检查更新", kind: "info" });
+        await message(i18n.t("updaterAlreadyUpToDate", { ns: "settings" }), {
+          title: i18n.t("checkUpdate", { ns: "settings" }),
+          kind: "info",
+        });
       }
       return;
     }
@@ -74,8 +78,11 @@ export async function checkForAppUpdates(userInitiated: boolean): Promise<void> 
     console.error("[updater] 检查更新失败:", error);
     if (userInitiated) {
       const msg = getErrorMessage(error);
-      const hint = getUpdateErrorHint(msg);
-      await message(`检查更新失败：${msg}${hint}`, { title: "检查更新", kind: "error" });
+      const hint = getUpdateErrorHint(msg, i18n.language);
+      await message(
+        i18n.t("updaterCheckFailed", { ns: "settings", message: `${msg}${hint}` }),
+        { title: i18n.t("checkUpdate", { ns: "settings" }), kind: "error" },
+      );
     }
   }
 }
@@ -90,17 +97,23 @@ export async function triggerUpdate(): Promise<void> {
     const update = await check();
     if (!update) {
       useUpdateStore.getState().clearUpdate();
-      await message("当前已是最新版本。", { title: "检查更新", kind: "info" });
+      await message(i18n.t("updaterAlreadyUpToDate", { ns: "settings" }), {
+        title: i18n.t("checkUpdate", { ns: "settings" }),
+        kind: "info",
+      });
       return;
     }
     await promptAndInstallUpdate(update);
   } catch (error) {
     console.error("[updater] 触发更新失败:", error);
     const msg = getErrorMessage(error);
-    await message(`检查更新失败：${msg}${getUpdateErrorHint(msg)}`, {
-      title: "检查更新",
-      kind: "error",
-    });
+    await message(
+      i18n.t("updaterCheckFailed", { ns: "settings", message: `${msg}${getUpdateErrorHint(msg, i18n.language)}` }),
+      {
+        title: i18n.t("checkUpdate", { ns: "settings" }),
+        kind: "error",
+      },
+    );
   }
 }
 
@@ -134,11 +147,16 @@ async function promptAndInstallUpdate(update: Awaited<ReturnType<typeof check>>)
   // busyAtConfirmation 警告；状态栏 / 首页 / 关于页三个入口都汇流到这里，警告必须在
   // 这条共享路径上，否则从那三处点更新就是无声杀会话。
   const busyWarning = hasBusySessions()
-    ? "\n\n⚠ 当前有会话正在运行，安装会中断它们。"
+    ? `\n\n${i18n.t("updaterBusyWarning", { ns: "settings" })}`
     : "";
   const confirmed = await ask(
-    `发现新版本 ${update.version}，是否立即下载并安装？${busyWarning}\n\n${update.body ?? ""}`,
-    { title: "发现新版本", kind: "info", okLabel: "立即更新", cancelLabel: "稍后" },
+    `${i18n.t("updaterFoundBody", { ns: "settings", version: update.version })}${busyWarning}\n\n${update.body ?? ""}`,
+    {
+      title: i18n.t("updaterFoundTitle", { ns: "settings" }),
+      kind: "info",
+      okLabel: i18n.t("updaterInstallNow", { ns: "settings" }),
+      cancelLabel: i18n.t("updaterLater", { ns: "settings" }),
+    },
   );
 
   if (!confirmed) return;

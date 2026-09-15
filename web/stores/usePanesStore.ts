@@ -33,7 +33,7 @@ import {
   enforceAgentChatLayoutPurity,
   sweepAgentChatTabsToReservedLayout,
 } from "./panes/agentChatLayout";
-import { isStarredLayout } from "./paneLayoutHelpers";
+import { defaultLayoutName, isStarredLayout } from "./paneLayoutHelpers";
 
 // 真身在 paneTreeHelpers；这里保留 re-export 维持既有 import 路径。
 export { TERMINAL_LAYOUT_CHANGED_EVENT } from "@/lib/paneTree";
@@ -44,7 +44,7 @@ export { matchLayoutPreset } from "./panes/layoutPresets";
 const initialPanel = createPanel();
 const initialLayout: LayoutEntry = {
   id: generateId("layout"),
-  name: "布局 1",
+  name: defaultLayoutName(1),
   kind: "normal",
   rootPane: initialPanel,
   activePaneId: initialPanel.id,

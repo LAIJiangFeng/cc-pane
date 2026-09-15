@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { UnlistenFn } from "@tauri-apps/api/event";
+import i18n from "@/i18n";
 import { listenIfTauri } from "@/services/runtime";
 // 直接 import 具体模块而非 "@/services" 桶文件：destroyPipeline 的教训——
 // 测试 vi.mock 桶文件时直连 import 会绕过 mock，这里从一开始就走具体路径。
@@ -202,6 +203,7 @@ export const useNotificationStore = create<NotificationStoreState>((set, get) =>
           && existing.body === notification.body
           && existing.kind === notification.kind
           && existing.source === notification.source
+          && existing.timestamp === notification.timestamp
         ) {
           return state;
         }
@@ -273,10 +275,10 @@ export const useNotificationStore = create<NotificationStoreState>((set, get) =>
 
   respond: async (id, text) => {
     const record = get().notifications.find((n) => n.id === id);
-    if (!record) throw new Error("通知不存在");
+    if (!record) throw new Error(i18n.t("errors.notificationMissing", { ns: "notifications" }));
     const sessionId = record.sessionId;
     if (!isNotificationSessionAlive(sessionId)) {
-      throw new Error("会话已不存在，无法回传输入");
+      throw new Error(i18n.t("errors.sessionGoneForRespond", { ns: "notifications" }));
     }
     await terminalService.submitToSession(sessionId as string, text);
     set((state) => {

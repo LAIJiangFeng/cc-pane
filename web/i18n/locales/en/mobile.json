@@ -84,5 +84,6 @@
     "sendFailed": "Send failed",
     "writeFailed": "Failed to write to the terminal",
     "shortcutLabel": "Insert {{char}}"
-  }
+  },
+  "noOpenablePath": "No openable path in the current workspace"
 }

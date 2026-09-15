@@ -953,37 +953,29 @@ mod tests {
     }
 
     #[test]
-    fn summarize_terminal_input_escapes_carriage_return() {
+    fn summarize_terminal_input_counts_control_characters_without_logging_them() {
         let summary = summarize_terminal_input("\r");
-
-        assert_eq!(summary["chars"][0], "\\r");
-        assert_eq!(summary["codePoints"][0], "d");
-        assert_eq!(summary["charCount"], 1);
-        assert_eq!(summary["utf8Bytes"], 1);
-        assert_eq!(summary["truncated"], false);
+        assert_eq!(summary, serde_json::json!({"charCount": 1, "utf8Bytes": 1}));
     }
 
     #[test]
-    fn summarize_terminal_input_truncates_long_input() {
-        let input = "a".repeat(30);
+    fn summarize_terminal_input_never_includes_input_text_or_bytes() {
+        let input = "private-input-marker".repeat(30);
         let summary = summarize_terminal_input(&input);
-
-        assert_eq!(summary["chars"].as_array().unwrap().len(), 24);
-        assert_eq!(summary["bytes"].as_array().unwrap().len(), 30);
-        assert_eq!(summary["charCount"], 30);
-        assert_eq!(summary["truncated"], true);
+        assert_eq!(summary.as_object().unwrap().len(), 2);
+        assert_eq!(summary["charCount"], input.chars().count());
+        assert_eq!(summary["utf8Bytes"], input.len());
+        assert!(!summary.to_string().contains("private-input-marker"));
     }
 
     #[test]
-    fn summarize_terminal_input_flags_truncation_on_wide_utf8() {
-        // 12 个中文字符 = 36 字节，超出 32 字节展示上限即视为截断
+    fn summarize_terminal_input_distinguishes_characters_and_utf8_bytes() {
         let input = "好".repeat(12);
         let summary = summarize_terminal_input(&input);
-
-        assert_eq!(summary["charCount"], 12);
-        assert_eq!(summary["utf8Bytes"], 36);
-        assert_eq!(summary["bytes"].as_array().unwrap().len(), 32);
-        assert_eq!(summary["truncated"], true);
+        assert_eq!(
+            summary,
+            serde_json::json!({"charCount": 12, "utf8Bytes": 36})
+        );
     }
 }
 

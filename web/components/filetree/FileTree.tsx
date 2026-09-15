@@ -2,6 +2,7 @@ import { useEffect, useCallback, useRef, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { handleErrorSilent } from "@/utils";
+import { createGitIgnoreMatcher } from "@/utils/gitIgnore";
 import { useFileTreeStore } from "@/stores";
 import { usePanesStore } from "@/stores";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -57,6 +58,8 @@ export default function FileTree({
   const setSelectedFilePath = useFileTreeStore((s) => s.setSelectedFilePath);
   const rawGitStatuses = useFileTreeStore((s) => s.gitStatuses[rootPath]);
   const loadGitStatuses = useFileTreeStore((s) => s.loadGitStatuses);
+  const rawIgnoredPaths = useFileTreeStore((s) => s.ignoredPaths[rootPath]);
+  const loadGitIgnoredPaths = useFileTreeStore((s) => s.loadGitIgnoredPaths);
   const openEditor = usePanesStore((s) => s.openEditor);
   const showLoadingSkeleton = useDelayedLoading(!tree);
 
@@ -73,9 +76,10 @@ export default function FileTree({
     if (!tree) {
       loadDirectory(rootPath, rootPath).catch((e) => handleErrorSilent(e, "load directory"));
     }
-    // 同步加载 git 状态
+    // 同步加载 git 状态与忽略路径
     loadGitStatuses(rootPath).catch(() => {});
-  }, [rootPath, tree, loadDirectory, loadGitStatuses]);
+    loadGitIgnoredPaths(rootPath).catch(() => {});
+  }, [rootPath, tree, loadDirectory, loadGitStatuses, loadGitIgnoredPaths]);
 
   // 监听活动编辑器 Tab，自动同步高亮
   useEffect(() => {
@@ -143,6 +147,12 @@ export default function FileTree({
 
     return merged;
   }, [rawGitStatuses, rootPath]);
+
+  // git-ignore 匹配器（F7.2）：忽略集变化时才重建，保证节点 memo 稳定
+  const ignoreMatcher = useMemo(
+    () => createGitIgnoreMatcher(rawIgnoredPaths ?? []),
+    [rawIgnoredPaths]
+  );
 
   const handleToggle = useCallback(
     (path: string) => {
@@ -376,6 +386,8 @@ export default function FileTree({
                     rootPath={rootPath}
                     selectedFilePath={selectedFilePath}
                     gitStatuses={gitStatuses}
+                    ignoreMatcher={ignoreMatcher}
+                    ignoredLabel={t("sidebar:filetree.ignored")}
                     focusedPath={activePath}
                     onToggle={handleToggle}
                     onFileClick={handleFileClick}

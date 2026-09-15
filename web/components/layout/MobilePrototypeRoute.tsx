@@ -1,6 +1,7 @@
 // mode=mobile-prototype 路由（从 App.tsx 原样搬出，勿在此做行为改动）。
 import { useCallback } from "react";
 import MobilePrototype from "@/components/mobile/MobilePrototype";
+import i18n from "@/i18n";
 import { usePanesStore, useWorkspacesStore } from "@/stores";
 import {
   useSessionLayoutPersistence,
@@ -133,7 +134,7 @@ export default function MobilePrototypeRoute() {
       onToggleWorkspaceHidden={(workspace) => updateHidden(workspace.name, !workspace.hidden)}
       onOpenWorkspaceFolder={(workspace) => {
         const path = getMobileWorkspacePath(workspace);
-        if (!path) return Promise.reject(new Error("当前工作空间没有可打开的路径"));
+        if (!path) return Promise.reject(new Error(i18n.t("noOpenablePath", { ns: "mobile" })));
         return providerService.openPathInExplorer(path);
       }}
       onOpenWorkspaceFileBrowser={handleOpenWorkspaceFileBrowser}

@@ -12,14 +12,14 @@ export interface ReplayGeometryTerminal {
 
 interface ReplayLayoutLock {
   depth: number;
-  layouts: Map<object, () => void>;
+  pendingLayouts: Map<object, () => void>;
 }
 
 const layoutLocks = new WeakMap<object, ReplayLayoutLock>();
 
 /** The geometry lock also covers a fresh/hidden view with no frame to freeze. */
 export function holdTerminalReplayGeometry(term: object): () => void {
-  const lock = layoutLocks.get(term) ?? { depth: 0, layouts: new Map() };
+  const lock = layoutLocks.get(term) ?? { depth: 0, pendingLayouts: new Map() };
   layoutLocks.set(term, lock);
   lock.depth += 1;
   let released = false;
@@ -28,18 +28,18 @@ export function holdTerminalReplayGeometry(term: object): () => void {
     released = true;
     if (--lock.depth > 0) return;
     layoutLocks.delete(term);
-    for (const apply of lock.layouts.values()) {
+    for (const apply of lock.pendingLayouts.values()) {
       try { apply(); }
       catch (error) { console.warn("[terminal-replay] Could not apply deferred layout", error); }
     }
-    lock.layouts.clear();
+    lock.pendingLayouts.clear();
   };
 }
 
 export function deferTerminalReplayGeometryLayout(term: object, owner: object, apply: () => void): boolean {
   const lock = layoutLocks.get(term);
   if (!lock) return false;
-  lock.layouts.set(owner, apply);
+  lock.pendingLayouts.set(owner, apply);
   return true;
 }
 

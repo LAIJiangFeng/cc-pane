@@ -2,6 +2,8 @@
   "rendererRecoveryFailed": "终端画面恢复失败。可以重试恢复画面，后台任务不会重新执行。",
   "retryRendererRecovery": "重试恢复画面",
   "ready": "准备就绪",
+  "sshLocalDropUnsupported": "本地文件无法拖入 SSH 终端",
+  "sshLocalDropUnsupportedHint": "拖入的 {{pathCount}} 个路径在本机上，远端主机无法访问。请先通过远程文件上传。",
   "selectProject": "从左侧选择一个项目以启动终端",
   "startingTerminal": "正在启动终端",
   "startingTerminalHint": "请稍候，正在准备终端会话...",
@@ -538,5 +540,9 @@
   "doubleClickFullscreenHint": "双击切换全屏",
   "autoFitLayout": "自动适配布局",
   "resizeLayoutList": "调整布局列表宽度",
-  "resizeLayoutListHeight": "调整布局列表高度"
+  "resizeLayoutListHeight": "调整布局列表高度",
+  "codexResumeCaptureExhausted": "Codex 会话 id 捕获失败：本次会话的新 resume id 未能记录，下次恢复可能回到更早的对话。",
+  "resumeLaunchFailed": "会话恢复失败：resume 目标可能已失效（{{cli}}）。原对话未能接上，可在该标签重新启动或新建会话。",
+  "defaultLayoutName": "布局 {{index}}",
+  "starredLayoutName": "星标"
 }

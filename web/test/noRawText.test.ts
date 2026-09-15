@@ -1,23 +1,35 @@
 /**
  * CJK 启发式比 JSX AST 守卫更轻量，足以冻结当前中文裸文案；英文文案由 i18n 键对等
  * 间接兜底。更精确、成本更高的 AST 版本留待 P2。
+ *
+ * 扫描范围（2026-09-14 扩大）：web/ 全目录 ts 与 tsx（原仅 components 下的 tsx）。
+ * 排除：测试文件、.d.ts、test/ 本身、i18n 资源、components/ui（shadcn 基件）、
+ * components/mobile（原型）。豁免项（AI prompt、终端清洗关键词、字体名等）以
+ * 基线存量形式冻结，只减不增。
  */
 import { describe, expect, it } from "vitest";
 
 import baseline from "./noRawText.baseline.json";
 
-const RAW_MODULES = import.meta.glob("../components/**/*.tsx", {
+const RAW_MODULES = import.meta.glob("../**/*.{ts,tsx}", {
   query: "?raw",
   import: "default",
   eager: true,
 }) as Record<string, string>;
 
 function relativePath(key: string): string {
-  return key.replace(/^\.\.\/components\//, "");
+  return key.replace(/^\.\.\//, "");
 }
 
 function isScannedFile(path: string): boolean {
-  return !/\.test\./.test(path) && !path.startsWith("ui/") && !path.startsWith("mobile/");
+  return (
+    !/\.test\./.test(path) &&
+    !/\.d\.ts$/.test(path) &&
+    !path.startsWith("test/") &&
+    !path.startsWith("i18n/") &&
+    !path.startsWith("components/ui/") &&
+    !path.startsWith("components/mobile/")
+  );
 }
 
 function stripComments(content: string): string {
@@ -34,6 +46,10 @@ describe("raw UI text ratchet", () => {
   const entries = Object.entries(RAW_MODULES)
     .map(([key, content]) => [relativePath(key), content] as const)
     .filter(([path]) => isScannedFile(path));
+
+  it("扫描到前端源码", () => {
+    expect(entries.length).toBeGreaterThan(0);
+  });
 
   it("存量中文命中只减不增", () => {
     const violations: string[] = [];

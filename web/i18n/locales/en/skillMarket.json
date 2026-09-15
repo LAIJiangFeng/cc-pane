@@ -61,5 +61,19 @@
     "removed": "Uninstalled {{name}}",
     "removeFailed": "Uninstall failed: {{error}}",
     "loadFailed": "Failed to load the skill catalog: {{error}}"
-  }
+  },
+  "skillInstalled": "Installed {{name}}",
+  "skillInstallFailed": "Install failed: {{error}}",
+  "skillRemoved": "Removed",
+  "deleteFailed": "Delete failed: {{error}}",
+  "globalSkillsDesc": "Manage CC-Panes global skills: market installs, installed user skills, and existing skills from each CLI (read-only).",
+  "installedUserSkills": "Installed skills",
+  "noUserSkills": "No user skills installed yet. Grab one from the market below.",
+  "deleteBtn": "Delete",
+  "noMarketSkills": "No market entries (or offline).",
+  "externalSkills": "Discovered externally (read-only)",
+  "noExternalSkills": "No skills found in ~/.claude, ~/.codex, or plugins.",
+  "bundledSkills": "Built-in CC-Panes skills (session-mounted, read-only)",
+  "noBundledSkills": "(Built-in skill list unavailable)",
+  "skillMarket": "Skill market"
 }

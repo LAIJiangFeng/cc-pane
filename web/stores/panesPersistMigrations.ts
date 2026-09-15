@@ -1,6 +1,7 @@
 import type { LayoutEntry, PaneNode, Tab } from "@/types";
 import { collectTerminalLeaves } from "@/lib/paneSessions";
 import { collectPanels, generateId } from "@/lib/paneTree";
+import { defaultLayoutName } from "./paneLayoutHelpers";
 
 /**
  * usePanesStore 持久化快照的版本迁移（v1 → v5）。
@@ -61,7 +62,7 @@ export function migratePersistedPanes(
       : collectPanels(rootPane)[0]?.id ?? rootPane.id;
     state.layouts = [{
       id: generateId("layout"),
-      name: "布局 1",
+      name: defaultLayoutName(1),
       kind: "normal",
       rootPane,
       activePaneId,

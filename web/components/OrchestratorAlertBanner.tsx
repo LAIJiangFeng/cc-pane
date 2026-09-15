@@ -36,6 +36,7 @@ export default function OrchestratorAlertBanner() {
   );
   const dismissedThisEpisode = useRef(false);
   const shownThisEpisode = useRef(false);
+  const episodeTimestamp = useRef<number | null>(null);
   const alerting = isOrchestratorAlerting(status);
 
   useEffect(() => {
@@ -43,6 +44,7 @@ export default function OrchestratorAlertBanner() {
     if (!alerting || !status) {
       dismissedThisEpisode.current = false;
       shownThisEpisode.current = false;
+      episodeTimestamp.current = null;
       if (store.activeToastIds.includes(ORCHESTRATOR_ALERT_NOTIFICATION_ID)) {
         store.dismissToast(ORCHESTRATOR_ALERT_NOTIFICATION_ID);
       }
@@ -50,9 +52,16 @@ export default function OrchestratorAlertBanner() {
     }
 
     if (dismissedThisEpisode.current) return;
-    if (shownThisEpisode.current && !alertVisible) {
+    // Read the current store: StrictMode may replay this effect before the
+    // subscribed alertVisible value has rendered again.
+    if (shownThisEpisode.current && !store.activeToastIds.includes(ORCHESTRATOR_ALERT_NOTIFICATION_ID)) {
       dismissedThisEpisode.current = true;
       return;
+    }
+
+    if (episodeTimestamp.current === null) {
+      const previous = store.notifications.find((item) => item.id === ORCHESTRATOR_ALERT_NOTIFICATION_ID);
+      episodeTimestamp.current = Math.max(Date.now(), (previous?.timestamp ?? 0) + 1);
     }
 
     const retryTime = formatRetryTime(status.nextRetryAt);
@@ -72,6 +81,7 @@ export default function OrchestratorAlertBanner() {
         title,
         body,
         source: "MCP",
+        timestamp: episodeTimestamp.current,
       }),
     );
     store.showToast(ORCHESTRATOR_ALERT_NOTIFICATION_ID);

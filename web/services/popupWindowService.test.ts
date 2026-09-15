@@ -88,6 +88,69 @@ describe("popupWindowService", () => {
     });
   });
 
+  describe("focusPoppedOutTab", () => {
+    it("应该用记录的 label 调用 focus_popup_terminal_window 并返回 true", async () => {
+      const service = await importService();
+      mockTauriInvoke({
+        create_popup_terminal_window: undefined,
+        focus_popup_terminal_window: true,
+      });
+      await service.popOutTab(createTabData());
+
+      const focused = await service.focusPoppedOutTab("tab-1");
+
+      expect(focused).toBe(true);
+      expect(invoke).toHaveBeenCalledWith("focus_popup_terminal_window", {
+        label: "popup-tab-1",
+      });
+    });
+
+    it("窗口已不存在（命令返回 false）时应返回 false", async () => {
+      const service = await importService();
+      mockTauriInvoke({
+        create_popup_terminal_window: undefined,
+        focus_popup_terminal_window: false,
+      });
+      await service.popOutTab(createTabData());
+
+      expect(await service.focusPoppedOutTab("tab-1")).toBe(false);
+    });
+
+    it("未记录的 tab 应直接返回 false，不调用命令", async () => {
+      const service = await importService();
+      resetTauriInvoke();
+
+      expect(await service.focusPoppedOutTab("unknown-tab")).toBe(false);
+      expect(invoke).not.toHaveBeenCalled();
+    });
+
+    it("命令抛错时应吞掉并返回 false（不让通知点击炸掉）", async () => {
+      const service = await importService();
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      mockTauriInvoke({
+        create_popup_terminal_window: undefined,
+        focus_popup_terminal_window: () => {
+          throw new Error("window gone");
+        },
+      });
+      await service.popOutTab(createTabData());
+
+      expect(await service.focusPoppedOutTab("tab-1")).toBe(false);
+      errorSpy.mockRestore();
+    });
+
+    it("Web 运行时应返回 false，不调用命令", async () => {
+      const service = await importService();
+      mockTauriInvoke({ create_popup_terminal_window: undefined });
+      await service.popOutTab(createTabData());
+      delete window.__TAURI_INTERNALS__;
+      resetTauriInvoke();
+
+      expect(await service.focusPoppedOutTab("tab-1")).toBe(false);
+      expect(invoke).not.toHaveBeenCalled();
+    });
+  });
+
   describe("getPopupTabData", () => {
     it("应该在首次获取到数据时直接解析返回", async () => {
       const service = await importService();

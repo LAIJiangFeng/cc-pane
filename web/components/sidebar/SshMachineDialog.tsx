@@ -19,6 +19,9 @@ import {
 import { useSshMachinesStore } from "@/stores";
 import { checkSshConnectivity } from "@/services/sshMachineService";
 import { getErrorMessage } from "@/utils";
+import { SshPasswordSection } from "@/components/sidebar/SshPasswordSection";
+import { SshRouteEditor } from "@/components/sidebar/SshRouteEditor";
+import { useSshRouteForm } from "@/hooks/useSshRouteForm";
 import type { SshMachine, AuthMethod, SshConnectivityResult } from "@/types";
 
 interface SshMachineDialogProps {
@@ -37,6 +40,8 @@ export default function SshMachineDialog({
   const updateMachine = useSshMachinesStore((s) => s.update);
 
   const isEdit = !!machine;
+
+  const route = useSshRouteForm(open, machine, isEdit, t);
 
   const [name, setName] = useState("");
   const [host, setHost] = useState("");
@@ -70,7 +75,8 @@ export default function SshMachineDialog({
     setDefaultPath("");
     setTagsStr("");
     setTestResult(null);
-  }, []);
+    route.reset();
+  }, [route.reset]);
 
   useEffect(() => {
     if (open && machine) {
@@ -139,7 +145,8 @@ export default function SshMachineDialog({
         clearStoredPassword ||
         passwordInput.trim().length > 0 ||
         defaultPath !== (machine.defaultPath || "") ||
-        tagsStr !== machine.tags.join(", ")
+        tagsStr !== machine.tags.join(", ") ||
+        route.isDirty()
       : false;
 
   const handleTestConnection = useCallback(async () => {
@@ -195,6 +202,12 @@ export default function SshMachineDialog({
       return;
     }
 
+    const routeError = route.validate();
+    if (routeError) {
+      toast.error(routeError);
+      return;
+    }
+
     const tags = tagsStr
       .split(",")
       .map((s) => s.trim())
@@ -216,6 +229,14 @@ export default function SshMachineDialog({
       defaultPath: defaultPath.trim() || undefined,
       tags,
       hasStoredPassword: authMethod === "password" ? rememberPassword : false,
+      proxy: route.machineFields.proxy,
+      jumpHost: route.machineFields.jumpHost,
+      hasStoredProxyPassword:
+        route.requestFields.clearStoredProxyPassword
+          ? false
+          : machine?.hasStoredProxyPassword ||
+            (route.requestFields.rememberProxyPassword &&
+              !!route.requestFields.proxyPasswordInput),
       createdAt: machine?.createdAt || now,
       updatedAt: now,
     };
@@ -235,6 +256,9 @@ export default function SshMachineDialog({
           (authMethod === "password" &&
             !rememberPassword &&
             !!machine?.hasStoredPassword),
+        rememberProxyPassword: route.requestFields.rememberProxyPassword,
+        proxyPasswordInput: route.requestFields.proxyPasswordInput,
+        clearStoredProxyPassword: route.requestFields.clearStoredProxyPassword,
       };
 
       if (isEdit) {
@@ -273,6 +297,9 @@ export default function SshMachineDialog({
     t,
     resetForm,
     onOpenChange,
+    route.validate,
+    route.machineFields,
+    route.requestFields,
   ]);
 
   const authOptions: { value: AuthMethod; label: string }[] = [
@@ -394,90 +421,15 @@ export default function SshMachineDialog({
           </div>
 
           {passwordSectionVisible && (
-            <div className="rounded-md border border-[var(--app-border)] bg-[var(--app-bg-secondary)] p-3">
-              <div className="mb-2 flex items-center justify-between gap-2">
-                <span className="text-xs font-medium text-[var(--app-text-secondary)]">
-                  {t("ssh.passwordSection", {
-                    defaultValue: "Password Storage",
-                  })}
-                </span>
-                {hasStoredPassword && (
-                  <span className="text-[10px] text-[var(--app-text-muted)]">
-                    {t("ssh.passwordStored", {
-                      defaultValue: "Password stored in system keychain",
-                    })}
-                  </span>
-                )}
-              </div>
-              <Input
-                type="password"
-                value={passwordInput}
-                onChange={(e) => {
-                  setPasswordInput(e.target.value);
-                  if (e.target.value.trim()) {
-                    setClearStoredPassword(false);
-                  }
-                }}
-                placeholder={
-                  hasStoredPassword
-                    ? t("ssh.passwordPlaceholderOptional", {
-                        defaultValue: "Leave blank to keep existing password",
-                      })
-                    : t("ssh.passwordPlaceholder", {
-                        defaultValue: "Enter password",
-                      })
-                }
-              />
-              <label className="mt-2 flex items-center gap-2 text-xs text-[var(--app-text-secondary)]">
-                <input
-                  type="checkbox"
-                  checked={rememberPassword}
-                  onChange={(e) => {
-                    setRememberPassword(e.target.checked);
-                    if (e.target.checked) {
-                      setClearStoredPassword(false);
-                    }
-                  }}
-                />
-                <span>
-                  {t("ssh.rememberPassword", {
-                    defaultValue:
-                      "Remember password in system credential store",
-                  })}
-                </span>
-              </label>
-              {hasStoredPassword && (
-                <div className="mt-2 flex items-center gap-2">
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    onClick={() => {
-                      setClearStoredPassword(true);
-                      setRememberPassword(false);
-                    }}
-                  >
-                    {t("ssh.clearStoredPassword", {
-                      defaultValue: "Clear stored password",
-                    })}
-                  </Button>
-                  {clearStoredPassword && (
-                    <span className="text-[10px] text-[var(--app-text-muted)]">
-                      {t("ssh.passwordClearPending", {
-                        defaultValue:
-                          "Stored password will be removed when you save.",
-                      })}
-                    </span>
-                  )}
-                </div>
-              )}
-              <p className="mt-2 text-[10px] text-[var(--app-text-muted)]">
-                {t("ssh.passwordNote", {
-                  defaultValue:
-                    "Only the first password factor is auto-filled. MFA verification still continues interactively in the terminal.",
-                })}
-              </p>
-            </div>
+            <SshPasswordSection
+              value={passwordInput}
+              onValueChange={setPasswordInput}
+              remember={rememberPassword}
+              onRememberChange={setRememberPassword}
+              clear={clearStoredPassword}
+              onClearChange={setClearStoredPassword}
+              hasStoredPassword={hasStoredPassword}
+            />
           )}
 
           {authMethod === "key" && (
@@ -492,6 +444,16 @@ export default function SshMachineDialog({
               />
             </div>
           )}
+
+          <SshRouteEditor
+            form={route.form}
+            setField={route.setField}
+            machines={route.machines}
+            excludeMachineId={machine?.id}
+            hasStoredProxyPassword={!!machine?.hasStoredProxyPassword}
+            targetHost={host.trim()}
+            targetPort={parseInt(port, 10)}
+          />
 
           <div>
             <label className="mb-1 block text-xs font-medium text-[var(--app-text-secondary)]">

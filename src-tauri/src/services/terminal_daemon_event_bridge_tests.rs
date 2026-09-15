@@ -11,6 +11,7 @@ fn status(session_id: &str, status: SessionStatus, updated_at: u64) -> SessionSt
         current_tool_use_id: None,
         current_tool_summary: None,
         updated_at,
+        osc_progress: None,
     }
 }
 

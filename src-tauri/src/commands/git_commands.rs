@@ -1,5 +1,6 @@
 use crate::models::{
-    DiffResult, GitChangedFile, GitDiffSpec, GitLogPage, GitLogQuery, GitRepoInfo,
+    DiffResult, GitChangedFile, GitConflictSummary, GitConflictVersions, GitDiffSpec, GitLogPage,
+    GitLogQuery, GitRepoInfo, GitResolveConflictRequest, GitResolveConflictResult,
 };
 use crate::services::{GitService, HistoryService};
 use crate::utils::{
@@ -98,6 +99,47 @@ pub async fn get_git_diff(path: String, spec: GitDiffSpec) -> AppResult<DiffResu
     spawn_git_task(move || {
         GitService::new()
             .get_diff(Path::new(&path), &spec)
+            .map_err(AppError::from)
+    })
+    .await
+}
+
+/// 列出仓库内的冲突文件与合并状态（F3.2 三栏冲突解决）
+#[tauri::command]
+pub async fn list_git_conflicts(path: String) -> AppResult<GitConflictSummary> {
+    validate_path(&path)?;
+    spawn_git_task(move || {
+        GitService::new()
+            .list_conflicts(Path::new(&path))
+            .map_err(AppError::from)
+    })
+    .await
+}
+
+/// 读取单个冲突文件的 base/ours/theirs/工作区四个版本
+#[tauri::command]
+pub async fn get_git_conflict_versions(
+    path: String,
+    file: String,
+) -> AppResult<GitConflictVersions> {
+    validate_path(&path)?;
+    spawn_git_task(move || {
+        GitService::new()
+            .conflict_versions(Path::new(&path), &file)
+            .map_err(AppError::from)
+    })
+    .await
+}
+
+/// 写回解决结果并 git add 暂存
+#[tauri::command]
+pub async fn resolve_git_conflict(
+    request: GitResolveConflictRequest,
+) -> AppResult<GitResolveConflictResult> {
+    validate_path(&request.path)?;
+    spawn_git_task(move || {
+        GitService::new()
+            .resolve_conflict(&request)
             .map_err(AppError::from)
     })
     .await
@@ -391,6 +433,18 @@ pub async fn get_git_file_statuses(path: String) -> AppResult<HashMap<String, St
     .await
 }
 
+/// 获取被 .gitignore 忽略的路径（绝对路径字符串列表），用于文件树斜体区分。
+#[tauri::command]
+pub async fn get_git_ignored_paths(path: String) -> AppResult<Vec<String>> {
+    validate_path(&path)?;
+    spawn_git_task(move || {
+        GitService::new()
+            .get_ignored_paths_compat(Path::new(&path))
+            .map_err(AppError::from)
+    })
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -512,6 +566,29 @@ mod tests {
         assert_eq!(status_of("tracked.txt"), Some("modified"));
         assert_eq!(status_of("untracked.txt"), Some("untracked"));
         assert_eq!(status_of("staged.txt"), Some("added"));
+    }
+
+    #[tokio::test]
+    async fn get_git_ignored_paths_returns_gitignored_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        git(root, &["init", "-q"]);
+        git(root, &["config", "user.email", "test@example.com"]);
+        git(root, &["config", "user.name", "test"]);
+
+        std::fs::write(root.join(".gitignore"), "ignored.log\n").unwrap();
+        std::fs::write(root.join("ignored.log"), "x").unwrap();
+        std::fs::write(root.join("kept.txt"), "y").unwrap();
+
+        let ignored = get_git_ignored_paths(root.to_string_lossy().to_string())
+            .await
+            .unwrap();
+        let names: Vec<_> = ignored
+            .iter()
+            .filter_map(|p| Path::new(p).file_name().and_then(|n| n.to_str()))
+            .collect();
+        assert!(names.contains(&"ignored.log"), "names = {names:?}");
+        assert!(!names.contains(&"kept.txt"), "names = {names:?}");
     }
 
     #[tokio::test]

@@ -3,6 +3,7 @@ import SettingsPanel from "@/components/SettingsPanel";
 import JournalPanel from "@/components/JournalPanel";
 import LocalHistoryPanel from "@/components/LocalHistoryPanel";
 import GitTimelinePanel from "@/components/GitTimelinePanel";
+import ConflictResolveDialog from "@/components/git/ConflictResolveDialog";
 import SessionCleanerPanel from "@/components/SessionCleanerPanel";
 import TodoPanel from "@/components/TodoPanel";
 import PlansPanel from "@/components/PlansPanel";
@@ -30,6 +31,9 @@ export default function AppDialogs({ recentFilesOpen, onCloseRecentFiles }: AppD
   const gitTimelineOpen = useDialogStore((s) => s.gitTimelineOpen);
   const gitTimelineProjectPath = useDialogStore((s) => s.gitTimelineProjectPath);
   const gitTimelineInitialFile = useDialogStore((s) => s.gitTimelineInitialFile);
+  const gitConflictOpen = useDialogStore((s) => s.gitConflictOpen);
+  const gitConflictProjectPath = useDialogStore((s) => s.gitConflictProjectPath);
+  const gitConflictInitialFile = useDialogStore((s) => s.gitConflictInitialFile);
   const sessionCleanerOpen = useDialogStore((s) => s.sessionCleanerOpen);
   const sessionCleanerProjectPath = useDialogStore((s) => s.sessionCleanerProjectPath);
   const todoOpen = useDialogStore((s) => s.todoOpen);
@@ -66,6 +70,14 @@ export default function AppDialogs({ recentFilesOpen, onCloseRecentFiles }: AppD
           : useDialogStore.getState().closeGitTimeline()}
         projectPath={gitTimelineProjectPath}
         initialFile={gitTimelineInitialFile}
+      />
+      <ConflictResolveDialog
+        open={gitConflictOpen}
+        onOpenChange={(open) => open
+          ? useDialogStore.getState().openGitConflict(gitConflictProjectPath, gitConflictInitialFile ?? undefined)
+          : useDialogStore.getState().closeGitConflict()}
+        projectPath={gitConflictProjectPath}
+        initialFile={gitConflictInitialFile}
       />
       <SessionCleanerPanel
         open={sessionCleanerOpen}

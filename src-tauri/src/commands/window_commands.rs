@@ -121,6 +121,41 @@ pub fn exit_mini_mode(app: AppHandle, width: f64, height: f64) -> AppResult<()> 
     Ok(())
 }
 
+/// 弹出窗口 label 前缀：与前端 `popOutTab` 的 `popup-${tabId}` 约定一致。
+const POPUP_WINDOW_LABEL_PREFIX: &str = "popup-";
+
+/// 只有弹出窗口允许被本命令抢焦点，避免被用来把主窗口/布局切换器顶到前面。
+fn is_popup_window_label(label: &str) -> bool {
+    label
+        .strip_prefix(POPUP_WINDOW_LABEL_PREFIX)
+        .is_some_and(|rest| !rest.is_empty())
+}
+
+/// 聚焦已弹出的终端窗口（docs/105 F7.3）。
+///
+/// tab 弹出后主窗口里只剩占位符，真身在 `popup-<tabId>` 这个独立系统窗口里，
+/// 所以通知点击必须把那个窗口唤到前面，而不是聚焦一个写着「已弹出」的空面板。
+/// 返回 `false` 表示窗口已不存在——调用方据此自愈（回收 tab 后回退到主窗口内定位）。
+#[tauri::command]
+pub fn focus_popup_terminal_window(app: AppHandle, label: String) -> AppResult<bool> {
+    debug!("cmd::focus_popup_terminal_window label={}", label);
+    if !is_popup_window_label(&label) {
+        return Err(AppError::from(format!(
+            "not a popup terminal window label: {label}"
+        )));
+    }
+    let Some(window) = app.get_webview_window(&label) else {
+        return Ok(false);
+    };
+    // 最小化时 set_focus 在 Windows 上不会还原窗口，必须先 unminimize。
+    if window.is_minimized().unwrap_or(false) {
+        window.unminimize().map_err(|e| e.to_string())?;
+    }
+    window.show().map_err(|e| e.to_string())?;
+    window.set_focus().map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
 /// 创建弹出终端窗口
 /// 使用 async fn 避免在 Windows 上同步创建 WebView2 导致主线程死锁
 #[tauri::command]
@@ -131,6 +166,11 @@ pub async fn create_popup_terminal_window(
     popup_store: State<'_, PopupDataStore>,
 ) -> AppResult<()> {
     debug!("cmd::create_popup_terminal_window label={}", label);
+    if !is_popup_window_label(&label) {
+        return Err(AppError::from(format!(
+            "popup window label must start with {POPUP_WINDOW_LABEL_PREFIX}: {label}"
+        )));
+    }
     // 存入共享 state，弹出窗口启动后通过 get_popup_tab_data 取回
     popup_store
         .lock()
@@ -358,4 +398,26 @@ fn monitor_logical_rect(monitor: &tauri::Monitor) -> (f64, f64, f64, f64) {
         size.width as f64 / scale,
         size.height as f64 / scale,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_popup_window_label;
+
+    #[test]
+    fn popup_label_guard_accepts_real_popup_windows() {
+        assert!(is_popup_window_label("popup-tab-1"));
+        assert!(is_popup_window_label("popup-abc"));
+    }
+
+    #[test]
+    fn popup_label_guard_rejects_bare_prefix_and_other_windows() {
+        // 裸前缀没有 tabId，无法定位窗口，拒绝。
+        assert!(!is_popup_window_label("popup-"));
+        // 其他窗口不得被本命令抢焦点。
+        assert!(!is_popup_window_label("main"));
+        assert!(!is_popup_window_label("layout-switcher"));
+        assert!(!is_popup_window_label("screenshot"));
+        assert!(!is_popup_window_label(""));
+    }
 }

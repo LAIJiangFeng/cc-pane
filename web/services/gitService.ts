@@ -58,6 +58,59 @@ export type GitDiffSpec =
   | { mode: "commitVsCommit"; oldRev: string; newRev: string; file: GitChangedFile }
   | { mode: "commitVsParent"; commit: string; parentIndex?: number | null; file: GitChangedFile };
 
+export type GitMergeState = "clean" | "merging" | "rebasing" | "cherryPicking";
+
+export type GitConflictStageKind = "base" | "ours" | "theirs";
+
+export interface GitConflictStage {
+  kind: GitConflictStageKind;
+  stage: number;
+  blob: string;
+  mode: string;
+}
+
+export interface GitConflictFile {
+  path: string;
+  absolutePath: string;
+  stages: GitConflictStage[];
+  isBinary: boolean;
+}
+
+export interface GitConflictSummary {
+  mergeState: GitMergeState;
+  hasConflicts: boolean;
+  files: GitConflictFile[];
+  theirsRef: string | null;
+}
+
+export interface GitConflictContent {
+  content: string | null;
+  size: number;
+  isBinary: boolean;
+  tooLarge: boolean;
+}
+
+export interface GitConflictVersions {
+  path: string;
+  absolutePath: string;
+  base: GitConflictContent;
+  ours: GitConflictContent;
+  theirs: GitConflictContent;
+  result: GitConflictContent;
+}
+
+export interface GitResolveConflictRequest {
+  path: string;
+  file: string;
+  content: string;
+}
+
+export interface GitResolveConflictResult {
+  path: string;
+  staged: boolean;
+  remainingConflicts: number;
+}
+
 export const gitService = {
   getRepoInfo(path: string): Promise<GitRepoInfo> {
     return invokeOrApi<GitRepoInfo>("get_git_repo_info", { path }, () =>
@@ -106,6 +159,24 @@ export const gitService = {
   getDiff(path: string, spec: GitDiffSpec): Promise<DiffResult> {
     return invokeOrApi<DiffResult>("get_git_diff", { path, spec }, () =>
       apiJson<DiffResult>("/api/git/diff", "POST", { path, spec }),
+    );
+  },
+
+  listConflicts(path: string): Promise<GitConflictSummary> {
+    return invokeOrApi<GitConflictSummary>("list_git_conflicts", { path }, () =>
+      apiGet<GitConflictSummary>("/api/git/conflicts", { path }),
+    );
+  },
+
+  getConflictVersions(path: string, file: string): Promise<GitConflictVersions> {
+    return invokeOrApi<GitConflictVersions>("get_git_conflict_versions", { path, file }, () =>
+      apiGet<GitConflictVersions>("/api/git/conflict-versions", { path, file }),
+    );
+  },
+
+  resolveConflict(request: GitResolveConflictRequest): Promise<GitResolveConflictResult> {
+    return invokeOrApi<GitResolveConflictResult>("resolve_git_conflict", { request }, () =>
+      apiJson<GitResolveConflictResult>("/api/git/resolve-conflict", "POST", request),
     );
   },
 };

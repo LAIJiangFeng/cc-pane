@@ -9,7 +9,7 @@ export function createTerminalInputQueue(
   const inputQueues = new Map<string, TerminalInputQueue>();
   const MAX_SESSION_INPUT_CHARS = 4 * 1024 * 1024;
   const MAX_GLOBAL_INPUT_CHARS = 8 * 1024 * 1024;
-  
+
   function getTerminalInputQueueStats(): { sessions: number; retainedChars: number } {
     return { sessions: inputQueues.size, retainedChars: [...inputQueues.values()].reduce((sum, queue) => sum + queue.retainedChars, 0) };
   }
@@ -43,14 +43,14 @@ export function createTerminalInputQueue(
     }
     return result;
   }
-  
+
   async function flushTerminalInputQueue(sessionId: string): Promise<void> {
     const queue = inputQueues.get(sessionId);
     if (!queue) return;
     if (queue.flushing) return;
     queue.timer = null;
     if (queue.pending.length === 0) return;
-  
+
     const batch = queue.pending.splice(0);
     const retainedChars = batch.reduce((sum, item) => sum + item.data.length, 0);
     const traceIds = batch.map((item) => item.traceId ?? null);
@@ -94,7 +94,7 @@ export function createTerminalInputQueue(
       }
     }
   }
-  
+
   function drainTerminalInputQueue(sessionId: string): Promise<void> {
     const queue = inputQueues.get(sessionId);
     if (!queue) return Promise.resolve();
@@ -111,7 +111,7 @@ export function createTerminalInputQueue(
       queue.idleResolvers.push(resolve);
     });
   }
-  
+
   function clearTerminalInputQueue(sessionId: string): void {
     const queue = inputQueues.get(sessionId);
     if (!queue) return;
@@ -129,7 +129,7 @@ export function createTerminalInputQueue(
     for (const resolve of queue.idleResolvers.splice(0)) resolve();
     inputQueues.delete(sessionId);
   }
-  
+
   return {
     enqueueTerminalInput, drainTerminalInputQueue, clearTerminalInputQueue, getTerminalInputQueueStats,
     clearAll: () => { for (const sessionId of [...inputQueues.keys()]) clearTerminalInputQueue(sessionId); },

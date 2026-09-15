@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { LockKeyhole } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { webAuthService, type WebAuthStatus } from "@/services/webAuthService";
@@ -10,6 +11,7 @@ interface WebAuthGateProps {
 }
 
 export default function WebAuthGate({ children }: WebAuthGateProps) {
+  const { t } = useTranslation("common");
   const [status, setStatus] = useState<WebAuthStatus | null>(null);
   const [username, setUsername] = useState("admin");
   const [password, setPassword] = useState("");
@@ -114,15 +116,15 @@ export default function WebAuthGate({ children }: WebAuthGateProps) {
       >
         <div className="flex items-center gap-2">
           <LockKeyhole className="w-5 h-5" style={{ color: "var(--app-accent)" }} />
-          <h1 className="text-base font-semibold">CC-Panes Web 已锁定</h1>
+          <h1 className="text-base font-semibold">{t("webAuth.lockedTitle")}</h1>
         </div>
         <div className="flex flex-col gap-2">
-          <Input value={username} onChange={(event) => setUsername(event.target.value)} placeholder="账号" />
+          <Input value={username} onChange={(event) => setUsername(event.target.value)} placeholder={t("webAuth.usernamePlaceholder")} />
           <Input
             type="password"
             value={password}
             onChange={(event) => setPassword(event.target.value)}
-            placeholder="密码"
+            placeholder={t("webAuth.passwordPlaceholder")}
             autoFocus
           />
         </div>
@@ -132,7 +134,7 @@ export default function WebAuthGate({ children }: WebAuthGateProps) {
           </p>
         )}
         <Button type="submit" disabled={submitting || !username.trim()}>
-          {submitting ? "登录中..." : "解锁"}
+          {submitting ? t("webAuth.submitting") : t("webAuth.unlock")}
         </Button>
       </form>
     </div>

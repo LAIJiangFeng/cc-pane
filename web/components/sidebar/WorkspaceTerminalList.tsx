@@ -71,7 +71,12 @@ export default function WorkspaceTerminalList({ workspaceName, rows }: Props) {
                 {statusLabel}
               </span>
             )}
-            <StatusIndicator status={row.status} toolName={row.toolName} size={7} />
+            <StatusIndicator
+              status={row.status}
+              toolName={row.toolName}
+              oscProgress={row.oscProgress}
+              size={7}
+            />
           </button>
         );
       })}

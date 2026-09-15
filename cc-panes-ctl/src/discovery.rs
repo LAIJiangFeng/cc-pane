@@ -148,6 +148,11 @@ pub fn discover_orchestrator_endpoint(data_dir: &Path) -> Result<ServiceEndpoint
     let manifest: OrchestratorManifest = serde_json::from_str(&content).map_err(|error| {
         DiscoveryError::new(format!("解析 {} 失败: {error}", manifest_path.display()))
     })?;
+    if manifest.lifecycle.as_deref() == Some("stopped") {
+        return Err(DiscoveryError::new(
+            "orchestrator 已停止；请启动 CC-Panes 以恢复 MCP 服务",
+        ));
+    }
     let server = manifest
         .mcp_servers
         .get("ccpanes")
@@ -308,6 +313,8 @@ struct DaemonManifest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OrchestratorManifest {
+    #[serde(default)]
+    lifecycle: Option<String>,
     #[serde(rename = "mcpServers")]
     mcp_servers: HashMap<String, OrchestratorServerEntry>,
     #[serde(default)]

@@ -2,6 +2,8 @@
   "rendererRecoveryFailed": "The terminal display could not recover. Retrying restores the display without rerunning the task.",
   "retryRendererRecovery": "Retry display recovery",
   "ready": "Ready",
+  "sshLocalDropUnsupported": "Local files can't be dropped into an SSH terminal",
+  "sshLocalDropUnsupportedHint": "The {{pathCount}} dropped path(s) live on this machine and don't exist on the remote host. Upload them through Remote Files first.",
   "selectProject": "Select a project from the sidebar to open a terminal",
   "startingTerminal": "Launching terminal",
   "startingTerminalHint": "Preparing the terminal session...",
@@ -538,5 +540,9 @@
   "doubleClickFullscreenHint": "Double-click to toggle fullscreen",
   "autoFitLayout": "Auto-fit layout",
   "resizeLayoutList": "Resize layout list",
-  "resizeLayoutListHeight": "Resize layout list height"
+  "resizeLayoutListHeight": "Resize layout list height",
+  "codexResumeCaptureExhausted": "Codex session id capture failed: the new resume id for this run was not recorded, so the next resume may fall back to an earlier conversation.",
+  "resumeLaunchFailed": "Session resume failed: the resume target may be invalid ({{cli}}). The original conversation could not be continued; relaunch or start a new session from that tab.",
+  "defaultLayoutName": "Layout {{index}}",
+  "starredLayoutName": "Starred"
 }

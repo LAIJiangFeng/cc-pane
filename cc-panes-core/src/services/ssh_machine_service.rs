@@ -160,6 +160,7 @@ impl SshMachineService {
         }
 
         self.validate_password_request(&machine, &request, false)?;
+        self.validate_proxy_password_request(&machine, &request, false)?;
 
         let previous = config.clone();
         let mut new_config = previous.clone();
@@ -198,6 +199,7 @@ impl SshMachineService {
         }
 
         self.validate_password_request(&machine, &request, true)?;
+        self.validate_proxy_password_request(&machine, &request, true)?;
 
         let previous_machine = config.machines[pos].clone();
         let previous = config.clone();
@@ -233,6 +235,10 @@ impl SshMachineService {
             if machine.auth_method == AuthMethod::Password {
                 self.credential_service.delete_password(id)?;
             }
+            // 代理密码与登录方式独立，删机器时一并清理，避免在 keyring 留下孤儿凭据。
+            if machine.proxy.is_some() {
+                self.credential_service.delete_proxy_password(id)?;
+            }
         }
         self.save_to_file(&new_config)?;
         *config = new_config;
@@ -240,23 +246,51 @@ impl SshMachineService {
     }
 
     fn hydrate_machine(&self, mut machine: SshMachine) -> SshMachine {
-        if machine.auth_method != AuthMethod::Password {
+        if machine.auth_method == AuthMethod::Password {
+            machine.has_stored_password = self.flag_or_false(
+                &machine.id,
+                "password",
+                self.credential_service.has_password(&machine.id),
+            );
+        } else {
             machine.has_stored_password = false;
-            return machine;
         }
 
-        machine.has_stored_password = match self.credential_service.has_password(&machine.id) {
-            Ok(has_password) => has_password,
+        // 代理密码与 SSH 登录认证方式无关：用密钥登录的机器同样可能配了需要
+        // 用户名密码的代理。仅在代理确实要求凭据时才反映存储状态，避免给
+        // 匿名 socks5/http 代理显示「已保存密码」。
+        let proxy_needs_password = machine
+            .proxy
+            .as_ref()
+            .is_some_and(|proxy| proxy.requires_credentials());
+        machine.has_stored_proxy_password = if proxy_needs_password {
+            self.flag_or_false(
+                &machine.id,
+                "proxy password",
+                self.credential_service.has_proxy_password(&machine.id),
+            )
+        } else {
+            false
+        };
+
+        machine
+    }
+
+    /// 把凭据存在性查询结果转成布尔值；查询失败时只告警并返回 false。
+    /// 保存/加载机器不应因为一次 keyring 探测失败而中断。
+    fn flag_or_false(&self, id: &str, kind: &str, result: Result<bool>) -> bool {
+        match result {
+            Ok(flag) => flag,
             Err(error) => {
                 warn!(
-                    machine_id = %machine.id,
+                    machine_id = %id,
+                    credential_kind = %kind,
                     error = %error,
-                    "Failed to determine whether SSH machine has a stored password"
+                    "Failed to determine whether SSH machine has the stored credential"
                 );
                 false
             }
-        };
-        machine
+        }
     }
 
     fn validate_password_request(
@@ -280,6 +314,36 @@ impl SshMachineService {
 
         anyhow::bail!(
             "Password is required to save this SSH machine in the system credential store"
+        );
+    }
+
+    /// 与登录密码相同的规则：勾选「记住代理密码」却没给新密码、也没已存密码时拒绝保存。
+    /// 否则用户会以为凭据存好了，实际连接时才在代理握手上失败。
+    fn validate_proxy_password_request(
+        &self,
+        machine: &SshMachine,
+        request: &SshMachineUpsertRequest,
+        is_update: bool,
+    ) -> Result<()> {
+        let proxy_needs_password = machine
+            .proxy
+            .as_ref()
+            .is_some_and(|proxy| proxy.requires_credentials());
+        if !proxy_needs_password || !request.remember_proxy_password {
+            return Ok(());
+        }
+
+        let password_input = request.proxy_password_input.as_deref().unwrap_or("").trim();
+        if !password_input.is_empty() {
+            return Ok(());
+        }
+
+        if is_update && self.credential_service.has_proxy_password(&machine.id)? {
+            return Ok(());
+        }
+
+        anyhow::bail!(
+            "Proxy password is required to save this SSH proxy in the system credential store"
         );
     }
 
@@ -309,6 +373,45 @@ impl SshMachineService {
             {
                 self.credential_service
                     .store_password(&machine.id, password)?;
+            }
+        }
+
+        self.apply_proxy_secret_update(machine, request, previous_machine)?;
+
+        Ok(())
+    }
+
+    /// 维护代理密码：移除代理/改配凭据/取消记住时清理，记住时写入。
+    /// 与 SSH 登录密码分开处理，二者在 keyring 中也是不同 account。
+    fn apply_proxy_secret_update(
+        &self,
+        machine: &SshMachine,
+        request: &SshMachineUpsertRequest,
+        previous_machine: Option<&SshMachine>,
+    ) -> Result<()> {
+        let proxy_needs_password = machine
+            .proxy
+            .as_ref()
+            .is_some_and(|proxy| proxy.requires_credentials());
+        let had_proxy = previous_machine
+            .map(|previous| previous.proxy.is_some())
+            .unwrap_or(false);
+
+        // 代理被移除、改成匿名代理、或用户明确要求清除时，删掉已存凭据。
+        // 删除是幂等的，不存在的条目删除不报错。
+        if request.clear_stored_proxy_password || (had_proxy && !proxy_needs_password) {
+            self.credential_service.delete_proxy_password(&machine.id)?;
+        }
+
+        if proxy_needs_password && request.remember_proxy_password {
+            if let Some(password) = request
+                .proxy_password_input
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                self.credential_service
+                    .store_proxy_password(&machine.id, password)?;
             }
         }
 
@@ -386,21 +489,21 @@ impl SshMachineService {
         let connection_service = self.connection_service.clone();
         let connection_machine = machine.clone();
         let connection_result = tokio::task::spawn_blocking(move || {
-            connection_service.connect_machine(&connection_machine)
+            let session = connection_service.connect_machine(&connection_machine)?;
+            // libssh2 disconnect/drop can perform I/O too; keep cleanup off async workers.
+            let _ = session.disconnect(None, "connectivity check complete", None);
+            Ok::<(), anyhow::Error>(())
         })
         .await
         .context("SSH connectivity check task failed")?;
         let latency = start.elapsed().as_millis() as u64;
 
         match connection_result {
-            Ok(session) => {
-                let _ = session.disconnect(None, "connectivity check complete", None);
-                Ok(SshConnectivityResult {
-                    reachable: true,
-                    message: format!("Connected in {}ms", latency),
-                    latency_ms: Some(latency),
-                })
-            }
+            Ok(()) => Ok(SshConnectivityResult {
+                reachable: true,
+                message: format!("Connected in {}ms", latency),
+                latency_ms: Some(latency),
+            }),
             Err(error) => Ok(SshConnectivityResult {
                 reachable: false,
                 message: format!("{error:#}"),
@@ -413,6 +516,7 @@ impl SshMachineService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::ssh_machine::{SshProxyConfig, SshProxyKind};
     use tempfile::tempdir;
 
     fn fixture_machine(id: &str, auth_method: AuthMethod) -> SshMachine {
@@ -427,7 +531,10 @@ mod tests {
             description: Some("notes".to_string()),
             default_path: Some("~/projects".to_string()),
             tags: vec!["prod".to_string()],
+            proxy: None,
+            jump_host: None,
             has_stored_password: false,
+            has_stored_proxy_password: false,
             created_at: "2026-01-01T00:00:00Z".to_string(),
             updated_at: "2026-01-01T00:00:00Z".to_string(),
         }
@@ -439,6 +546,9 @@ mod tests {
             remember_password: false,
             password_input: None,
             clear_stored_password: false,
+            remember_proxy_password: false,
+            proxy_password_input: None,
+            clear_stored_proxy_password: false,
         }
     }
 
@@ -533,5 +643,121 @@ mod tests {
             .credential_service
             .has_password("m1")
             .expect("credential lookup"));
+    }
+
+    fn fixture_proxy(username: Option<&str>) -> SshProxyConfig {
+        SshProxyConfig {
+            kind: SshProxyKind::Socks5,
+            host: "proxy.local".to_string(),
+            port: 1080,
+            username: username.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn add_stores_proxy_password_separately_and_hydrates_flag() {
+        let dir = tempdir().expect("tempdir");
+        let service =
+            SshMachineService::new_with_memory_credentials(dir.path().join("ssh-machines.json"));
+
+        let mut machine = fixture_machine("m1", AuthMethod::Key);
+        machine.proxy = Some(fixture_proxy(Some("proxyuser")));
+        let mut request = fixture_request(machine);
+        request.remember_proxy_password = true;
+        request.proxy_password_input = Some("proxy-secret".to_string());
+
+        let saved = service.add(request).expect("add proxied machine");
+        assert!(
+            saved.has_stored_proxy_password,
+            "a key-auth machine can still carry a proxy password"
+        );
+        // 代理密码不能污染 SSH 登录密码字段，也不能落盘。
+        assert!(!saved.has_stored_password);
+        let content =
+            std::fs::read_to_string(dir.path().join("ssh-machines.json")).expect("config file");
+        assert!(!content.contains("proxy-secret"));
+    }
+
+    #[test]
+    fn anonymous_proxy_does_not_store_or_flag_a_password() {
+        let dir = tempdir().expect("tempdir");
+        let service =
+            SshMachineService::new_with_memory_credentials(dir.path().join("ssh-machines.json"));
+
+        let mut machine = fixture_machine("m1", AuthMethod::Key);
+        machine.proxy = Some(fixture_proxy(None));
+        let mut request = fixture_request(machine);
+        request.remember_proxy_password = true;
+        request.proxy_password_input = Some("ignored".to_string());
+
+        let saved = service.add(request).expect("add anonymous proxy machine");
+        assert!(
+            !saved.has_stored_proxy_password,
+            "an anonymous proxy must not be shown as having a stored password"
+        );
+        assert!(!service
+            .credential_service
+            .has_proxy_password("m1")
+            .expect("credential lookup"));
+    }
+
+    #[test]
+    fn removing_proxy_clears_stored_proxy_password() {
+        let dir = tempdir().expect("tempdir");
+        let service =
+            SshMachineService::new_with_memory_credentials(dir.path().join("ssh-machines.json"));
+
+        let mut machine = fixture_machine("m1", AuthMethod::Key);
+        machine.proxy = Some(fixture_proxy(Some("proxyuser")));
+        let mut add_request = fixture_request(machine);
+        add_request.remember_proxy_password = true;
+        add_request.proxy_password_input = Some("proxy-secret".to_string());
+        service.add(add_request).expect("seed proxied machine");
+
+        // 去掉代理后更新：已存凭据应被清理，避免孤儿 secret 残留 keyring。
+        let cleared = fixture_machine("m1", AuthMethod::Key);
+        let update_request = fixture_request(cleared);
+        let updated = service
+            .update(update_request)
+            .expect("update without proxy");
+        assert!(!updated.has_stored_proxy_password);
+        assert!(!service
+            .credential_service
+            .has_proxy_password("m1")
+            .expect("credential lookup"));
+    }
+
+    #[test]
+    fn remove_deletes_proxy_password() {
+        let dir = tempdir().expect("tempdir");
+        let service =
+            SshMachineService::new_with_memory_credentials(dir.path().join("ssh-machines.json"));
+
+        let mut machine = fixture_machine("m1", AuthMethod::Key);
+        machine.proxy = Some(fixture_proxy(Some("proxyuser")));
+        let mut add_request = fixture_request(machine);
+        add_request.remember_proxy_password = true;
+        add_request.proxy_password_input = Some("proxy-secret".to_string());
+        service.add(add_request).expect("seed proxied machine");
+
+        service.remove("m1").expect("remove machine");
+        assert!(!service
+            .credential_service
+            .has_proxy_password("m1")
+            .expect("credential lookup"));
+    }
+
+    #[test]
+    fn remembering_proxy_password_without_a_value_is_rejected() {
+        let dir = tempdir().expect("tempdir");
+        let service =
+            SshMachineService::new_with_memory_credentials(dir.path().join("ssh-machines.json"));
+
+        let mut machine = fixture_machine("m1", AuthMethod::Key);
+        machine.proxy = Some(fixture_proxy(Some("proxyuser")));
+        let mut request = fixture_request(machine);
+        request.remember_proxy_password = true;
+        // 没有新密码，也没有已存密码：必须拒绝，而不是静默存空。
+        assert!(service.add(request).is_err());
     }
 }

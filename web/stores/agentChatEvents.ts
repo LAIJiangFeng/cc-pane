@@ -5,6 +5,7 @@
 // 的 chunk 合批 16ms 再 flush，非 chunk 事件先排空缓冲保序。
 // 从 useAgentChatStore 拆出（行数棘轮）：store 只管状态形状，这里只管事件到动作的翻译。
 import { agentChatService } from "@/services/agentChatService";
+import i18n from "@/i18n";
 import { handleErrorSilent } from "@/utils/errorHandler";
 import type {
   AcpChatEvent,
@@ -86,7 +87,9 @@ export function describeAutoApproved(data: unknown): string | null {
   const toolCall = notification.params?.toolCall;
   const kind = notification.resolvedKind ?? toolCall?.kind ?? "other";
   const title = toolCall?.title?.trim();
-  return title ? `已自动放行 · ${title}（${kind}）` : `已自动放行（${kind}）`;
+  return title
+    ? i18n.t("agentChat.autoApprovedWith", { ns: "notifications", title, kind })
+    : i18n.t("agentChat.autoApproved", { ns: "notifications", kind });
 }
 
 function dispatchAgentChatEvent(event: AcpChatEvent): void {
@@ -159,7 +162,7 @@ function dispatchAgentChatEvent(event: AcpChatEvent): void {
         data?.method === "ccpanes/load-failed"
         || data?.method === "ccpanes/load-unsupported"
       ) {
-        store.pushNotice(chatId, "未能续接原对话上下文，已开启全新会话");
+        store.pushNotice(chatId, i18n.t("agentChat.resumeFallbackNotice", { ns: "notifications" }));
         return;
       }
       // 自动放行也要留痕：用户勾了类别就看不到审批卡，得知道替他答了什么。

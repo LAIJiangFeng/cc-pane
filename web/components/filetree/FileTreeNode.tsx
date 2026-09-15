@@ -15,6 +15,7 @@ import {
   Terminal,
 } from "lucide-react";
 import type { FileTreeNode as FileTreeNodeType } from "@/types/filesystem";
+import { NO_IGNORES, type GitIgnoreMatcher } from "@/utils/gitIgnore";
 
 interface FileTreeNodeProps {
   node: FileTreeNodeType;
@@ -23,6 +24,10 @@ interface FileTreeNodeProps {
   rootPath: string;
   selectedFilePath?: string | null;
   gitStatuses?: Record<string, string>;
+  /** git-ignore 匹配器（F7.2）：命中的文件/目录用斜体区分 */
+  ignoreMatcher?: GitIgnoreMatcher;
+  /** 忽略项的悬浮提示文案（由父组件传入已翻译文本，避免在 memo 节点内挂 hook） */
+  ignoredLabel?: string;
   /** roving tabindex：当前可聚焦项路径（其余为 -1） */
   focusedPath?: string | null;
   onToggle: (path: string) => void;
@@ -125,6 +130,8 @@ export default memo(function FileTreeNode({
   depth,
   selectedFilePath,
   gitStatuses,
+  ignoreMatcher,
+  ignoredLabel,
   focusedPath,
   onToggle,
   onFileClick,
@@ -163,6 +170,8 @@ export default memo(function FileTreeNode({
   const isSelected = !node.entry.isDir && node.entry.path === selectedFilePath;
   const gitStatus = gitStatuses?.[node.entry.path];
   const gitBadge = gitStatus ? GIT_STATUS_BADGES[gitStatus] : undefined;
+  // F7.2：被 .gitignore 忽略的文件/目录（含忽略目录下的后代）斜体区分
+  const isIgnored = (ignoreMatcher ?? NO_IGNORES).isIgnored(node.entry.path);
 
   return (
     <div
@@ -179,6 +188,7 @@ export default memo(function FileTreeNode({
       style={{ paddingLeft }}
       data-file-path={node.entry.path}
       data-current={isSelected ? "true" : undefined}
+      data-ignored={isIgnored ? "true" : undefined}
       onClick={handleClick}
       onDoubleClick={handleDoubleClick}
       onContextMenu={handleContextMenu}
@@ -212,7 +222,8 @@ export default memo(function FileTreeNode({
       <span
         className={`min-w-0 flex-1 truncate text-[13px] leading-5 text-[var(--app-text-primary)] ${
           node.entry.isDir ? "font-semibold" : ""
-        }`}
+        } ${isIgnored ? "italic opacity-55" : ""}`}
+        title={isIgnored ? ignoredLabel : undefined}
       >
         {node.entry.name}
       </span>

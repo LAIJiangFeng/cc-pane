@@ -188,7 +188,7 @@ export default function ProviderModelsEditor({
                           <SelectItem
                             key={preset.size}
                             value={String(preset.tokens)}
-                            title={preset.familyHint}
+                            title={preset.familyHintKey ? t(preset.familyHintKey as never) : undefined}
                           >
                             {t(`providerContextWindow.${preset.size}` as never)}
                           </SelectItem>
