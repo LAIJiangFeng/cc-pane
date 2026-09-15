@@ -4,7 +4,7 @@ import { cn } from "@/lib/utils";
 export type AlertBannerTone = "warning" | "danger";
 
 /**
- * AppShell 顶部告警横幅的共享外壳（OrchestratorAlertBanner / RestoreRegressionBanner）。
+ * AppShell 顶部告警横幅的共享外壳（RestoreRegressionBanner）。
  *
  * 视觉契约：「Refined Developer Tool」——语义 token、发丝边框、克制 elevation：
  * - 色调只走 `--app-status-*-bg/border/fg` 语义 token，不出现裸色值；
